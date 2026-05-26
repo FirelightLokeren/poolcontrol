@@ -142,6 +142,4 @@ Zie: https://github.com/FirelightLokeren/esphome-pool-display
 
 - [ ] pH probe bestellen (slope 86.2%, versleten)
 - [ ] CYA verlagen via waterwissel
-- [ ] Bootloader updaten via USB
-- [ ] BLE display debug (placeholders nog niet zichtbaar)
-- [ ] Pompsnelheid naar low toevoegen bij harde batterijstop
+
