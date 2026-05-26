@@ -1,6 +1,6 @@
 # ESPHome Poolcontrol
 
-ESPHome configuratie voor het automatiseren van een achthoekige opbouwpool (10m³) met een ESP32.
+ESPHome configuratie voor het automatiseren van een zeshoekige opbouwpool (10m³) met een ESP32.
 
 ## Hardware
 
@@ -40,8 +40,8 @@ poolcontrol_files/
 
 | Relay | ID | Functie |
 |-------|----|---------|
-| 1 | - | vrij |
-| 2 | `relay_pump_off` | Pomp uit |
+|   1   |  - |   vrij  |
+|   2   | `relay_pump_off` | Pomp uit |
 | 3 | `relay_pump_low` | Pomp laag (~1.5 L/min) |
 | 4 | `relay_pump_med` | Pomp medium (~2.3 L/min) |
 | 5 | `relay_pump_high` | Pomp hoog (~2.75 L/min) |
