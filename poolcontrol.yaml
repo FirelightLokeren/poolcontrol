@@ -131,6 +131,9 @@ select:
         - lambda: |-
             if (x == "vacuum") {
               ESP_LOGI("vacuum", "Vacuum modus gestart → pomp high + klep Pool");
+              // Huidige snelheid opslaan vóór vacuum overschrijft
+              id(last_pump_speed) = id(pump_speed).current_option();
+              ESP_LOGI("vacuum", "Vorige pompsnelheid opgeslagen: %s", id(last_pump_speed).c_str());
               id(relay_pump_high).turn_on();
               id(pump_speed).publish_state("high");
               id(relay_bypass).turn_off();
@@ -349,19 +352,39 @@ interval:
           // --- VACUUM MODUS BEWAKING ---
           if (id(pump_mode).current_option() == "vacuum") {
             uint32_t now = millis() / 1000;
+
             // Geforceerd high houden
             if (id(pump_speed).current_option() != "high") {
               id(relay_pump_high).turn_on();
               id(pump_speed).publish_state("high");
             }
+
             // Klep op Pool houden
             if (id(relay_bypass).state) {
               id(relay_bypass).turn_off();
             }
-            // Na 60 min terug naar auto
+
+            // Na 60 min: snelheid herstellen en terug naar auto
             if (id(vacuum_start_time) > 0 &&
                 (now - id(vacuum_start_time)) >= 3600) {
-              ESP_LOGI("vacuum", "Vacuum modus klaar na 60 min → terug naar auto");
+              ESP_LOGI("vacuum", "Vacuum modus klaar na 60 min → snelheid herstellen en terug naar auto");
+
+              // Vorige pompsnelheid herstellen via interlock-relay
+              // (interlock zet relay_pump_high automatisch uit)
+              std::string prev = id(last_pump_speed);
+              if (prev == "low") {
+                id(relay_pump_low).turn_on();
+                id(pump_speed).publish_state("low");
+              } else if (prev == "high") {
+                id(relay_pump_high).turn_on();
+                id(pump_speed).publish_state("high");
+              } else {
+                // fallback naar med: dekt "med", leeg, of onbekend
+                id(relay_pump_med).turn_on();
+                id(pump_speed).publish_state("med");
+              }
+              ESP_LOGI("vacuum", "Pompsnelheid hersteld naar: %s", prev.empty() ? "med (fallback)" : prev.c_str());
+
               id(pump_mode).make_call().set_option("auto").perform();
               id(vacuum_start_time) = 0;
             }
