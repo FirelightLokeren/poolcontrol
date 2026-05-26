@@ -1,121 +1,147 @@
-# ESPHome Pool Display
+# ESPHome Poolcontrol
 
-An ESPHome component that connects an **ACT1025 BLE LED matrix display** (64×16 pixels) to Home Assistant, showing real-time pool measurements: temperature, pH and ORP.
-
-![Pool Display](https://img.shields.io/badge/ESPHome-2026.5.0-blue) ![Framework](https://img.shields.io/badge/Framework-Arduino-green) ![Display](https://img.shields.io/badge/Display-ACT1025-orange)
-
-## Display layout
-
-```
-+------------------+----------------+-----------------+
-|     28.5°        |      7.4       |       694       |
-|      TEMP        |       PH       |       ORP       |
-+------------------+----------------+-----------------+
-```
-
-| Column | Value | Colour | Normal range |
-|--------|-------|--------|--------------|
-| Left   | Temperature (°C) | Cyan   | 10°C – 35°C  |
-| Centre | pH value         | Green  | 7.0 – 7.6    |
-| Right  | ORP (mV)         | Yellow | 650 – 800 mV |
-
-Values turn **red** when outside the normal range.
+ESPHome configuratie voor het automatiseren van een achthoekige opbouwpool (10m³) met een ESP32.
 
 ## Hardware
 
 | Component | Details |
 |-----------|---------|
-| Display | BK-Light ACT1025, 64×16 RGB LED matrix |
-| Controller | Olimex ESP32-POE |
-| Connection | Bluetooth Low Energy (BLE) |
-| Framework | Arduino (ESPHome 2026.5.0) |
+| Controller | ESP32 (esp32dev, Arduino framework) op `192.168.1.48` |
+| Relay board | Dingtian (dtr0xx_io via UART GPIO1/3) — 8 relays, 8 inputs |
+| pH probe | Atlas Scientific EZO (I2C 0x63) |
+| ORP probe | Atlas Scientific EZO (I2C 0x62) |
+| Roof temp | Atlas Scientific EZO RTD (I2C 0x66) |
+| Pool temp | Atlas Scientific EZO RTD (I2C 0x67) |
+| Flow | Atlas Scientific EZO FLO (I2C 0x68) |
+| Omgeving temp | DS18B20 (1-wire GPIO0) |
+| Warmtepomp | W'Eau WFI-005 (Local Tuya) |
+| Poolpomp | Aquaforte Vario iSaver+ (D1-D4 relays) |
+| Display | ACT1025 BLE LED matrix (MAC: `0D:D0:1E:CD:2F:D2`) |
+| Omvormer | Huawei SUN2000-8KTL + LUNA2000 batterij |
+| Fotometer | PoolLab 1.0 |
+| Zonnecollectoren | 10.5m² op dak |
 
-## File structure
+## Bestandsstructuur
 
 ```
-/config/esphome/
-├── pool-display.yaml
+poolcontrol.yaml                 ← hoofdbestand
+poolcontrol_files/
+├── core.yaml                    ← wifi, logging, api, ota
+├── heatpump.yaml                ← energiebeheer + warmtepomp
+├── dingtian.yaml                ← relay/input configuratie
+├── display.yaml                 ← BLE display package
 └── components/
     └── pool_display/
-        ├── __init__.py
-        └── pool_display.h
+        ├── pool_display.h       ← Arduino BLE component
+        └── __init__.py
 ```
 
-## Installation
+## Relay mapping
 
-### 1. Copy the component files
+| Relay | ID | Functie |
+|-------|----|---------|
+| 1 | - | vrij |
+| 2 | `relay_pump_off` | Pomp uit |
+| 3 | `relay_pump_low` | Pomp laag (~1.5 L/min) |
+| 4 | `relay_pump_med` | Pomp medium (~2.3 L/min) |
+| 5 | `relay_pump_high` | Pomp hoog (~2.75 L/min) |
+| 6 | - | vrij |
+| 7 | `relay_bypass` | Bypass dak (OFF=Pool, ON=Roof) |
+| 8 | - | vrij |
 
-Copy the `components/` folder and `pool-display.yaml` to your ESPHome configuration directory (`/config/esphome/`).
+## Pump Mode
 
-### 2. Find the MAC address of your display
+| Mode | Beschrijving |
+|------|-------------|
+| `auto` | Volledig automatisch beheerd |
+| `manual` | Manuele controle |
+| `vacuum` | High + klep Pool geforceerd, na 60 min terug naar auto |
 
-Use the **nRF Connect** app (Android/iOS) to scan for BLE devices. Look for a device named `LED_BLE_XXXXXX`. The MAC address is shown below the device name.
+## Warmtepomp Auto Logica
 
-### 3. Update the configuration
-
-Edit `pool-display.yaml` and update the following:
-
-```yaml
-# BLE MAC address of your ACT1025 display
-ble_client:
-  - mac_address: "0D:D0:1E:CD:2F:D2"  # ← replace with your MAC address
-
-# Home Assistant sensor entities
-sensor:
-  - platform: homeassistant
-    entity_id: sensor.your_temperature_sensor   # ← replace
-
-  - platform: homeassistant
-    entity_id: sensor.your_ph_sensor            # ← replace
-
-  - platform: homeassistant
-    entity_id: sensor.your_orp_sensor           # ← replace
+### Inschakelen verwarmen
+```
+export > 1.5kW + import < 0.1kW + pv > 200W
+OF batterij > 80% + pv > 500W
+EN pool < target - 0.5°C
+→ heat mode + quick_heat preset
 ```
 
-Also update your WiFi credentials and API key in `secrets.yaml`.
+### Inschakelen koelen
+```
+zelfde energieconditie
+EN pool > target + 0.5°C
+→ cool mode + quiet_cool preset
+(max koeltemperatuur warmtepomp: 28°C)
+```
 
-### 4. Compile and flash
+### Uitschakelen
+```
+geen energie OF pool op temp
+EN minimum 30 min gelopen
+```
 
-Open the ESPHome dashboard in Home Assistant and click **Install** on the pool-display device.
+### Harde stop (batterij)
+```
+SOC daalt >= 3% + PV < 200W
+→ warmtepomp UIT (ook in manual mode)
+→ notificatie
+```
 
-## Home Assistant entities
+## Pompsnelheid Batterijlogica
+```
+SOC daalt >= 3% + auto mode → pomp naar low
+SOC stijgt >= 3% + auto mode → terug naar med
+```
 
-| Entity | Type | Description |
-|--------|------|-------------|
-| Panel Connected | Binary sensor | BLE connection status |
-| Display Rotated | Binary sensor | Current rotation state |
-| Panel Power | Switch | Turn display on/off |
-| Display Brightness | Number (0–100) | Brightness control |
-| Rotate 180° | Button | Rotate display 180° (saved after reboot) |
+## Flow Beveiliging
+```
+Flow < 0.5 L/min + pomp aan (auto mode):
+  Retry 1: pomp 30sec UIT → herstart → 1min wachten
+  Retry 2: pomp 30sec UIT → herstart → 1min wachten
+  Retry 3: emergency shutdown + push notificatie
+```
 
-## Usage
+## Notificaties
 
-### Adjusting brightness
-Use the **Display Brightness** slider in Home Assistant (default: 70).
+| Situatie | Kanaal |
+|----------|--------|
+| Warmtepomp AAN ☀️ | HA persistent notification |
+| Warmtepomp UIT 🌙 | HA persistent notification |
+| Manueel gewijzigd 🖐️ | HA persistent notification |
+| Fault + auto + low | HA notif (pomp naar med) |
+| Fault + auto + med/high | HA notif + push gsm_koen |
+| Emergency shutdown | HA notif + push gsm_koen |
 
-### Rotating the screen
-Press the **Rotate 180°** button. The setting is saved to flash memory and persists after reboot.
+## HA Sensoren gebruikt in ESPHome
 
-### Turning off the display
-Use the **Panel Power** switch. The BLE connection remains active.
+| Sensor | ESPHome ID |
+|--------|-----------|
+| `sensor.inverter_active_power` | `pv_power` (W) |
+| `sensor.batteries_state_of_capacity` | `battery_soc` (%) |
+| `sensor.electricity_meter_power_production` | `grid_export` (kW) |
+| `sensor.electricity_meter_power_consumption` | `grid_import` (kW) |
+| `climate.w_eau_pool_heatpump` | target temp + mode |
+| `binary_sensor.w_eau_pool_heatpump_fault` | fault detectie |
 
-## Troubleshooting
+## BLE Display
 
-| Problem | Solution |
-|---------|----------|
-| Display shows boot screen | Wait 10–20 seconds for BLE reconnect |
-| Values not updating | Check ESPHome is added in HA integrations |
-| Panel Connected = OFF | Restart ESP32, check display is powered on |
-| Screen is upside down | Press Rotate 180° button |
+```
+MAC: 0D:D0:1E:CD:2F:D2
+Component: pool_display (local, Arduino framework)
+Toont: pool temp, pH, ORP
+Zie: https://github.com/FirelightLokeren/esphome-pool-display
+```
 
-## Protocol
+## HA Automatiseringen
 
-The component communicates with the ACT1025 using the BK-Light BLE protocol:
-- Service UUID: `0x00FA`
-- Write characteristic: `0xFA02`
-- Notify characteristic: `0xFA03`
-- Images are sent as compressed PNG wrapped in the BK-Light frame format
+- **PoolLab herinnering**: elke dag 20:00 → push als meting >= 3 dagen geleden
+- **PoolLab push**: bij nieuwe meting → push met alle waterwaarden
 
-## License
+## Pending
 
-MIT License — feel free to use and modify.
+- [ ] pH probe bestellen (slope 86.2%, versleten)
+- [ ] CYA verlagen via waterwissel
+- [ ] Bootloader updaten via USB
+- [ ] BLE display debug (placeholders nog niet zichtbaar)
+- [ ] Pompsnelheid naar low toevoegen bij harde batterijstop
