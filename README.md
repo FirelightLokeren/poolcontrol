@@ -1,6 +1,6 @@
 # ESPHome Poolcontrol
 
-ESPHome configuratie voor het automatiseren van een achthoekige opbouwpool (10m³) met een ESP32.
+ESPHome configuratie voor het automatiseren van een zeshoekige opbouwpool (10m³) met een ESP32.
 
 ## Hardware
 
