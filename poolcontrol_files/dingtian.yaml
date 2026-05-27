@@ -319,6 +319,7 @@ interval:
 
       - lambda: |-
           // UPDATE DASHBOARD MET HUIDIGE SNELHEID
+          // + RESET FLOW REFERENTIE BIJ SNELHEIDSWIJZIGING
           std::string current_speed;
           if (id(relay_pump_off).state) {
             current_speed = "off";
@@ -332,4 +333,8 @@ interval:
           if (current_speed != id(last_pump_speed)) {
             id(last_pump_speed) = current_speed;
             id(pump_speed).publish_state(current_speed);
+            // Snelheid gewijzigd → flow referentie resetten
+            id(flow_reference) = 0;
+            id(flow_low_since) = 0;
+            ESP_LOGI("flow_trend", "Snelheid gewijzigd naar %s → referentie gereset", current_speed.c_str());
           }

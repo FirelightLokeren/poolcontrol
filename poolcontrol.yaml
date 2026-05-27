@@ -77,6 +77,10 @@ globals:
     type: std::string
     initial_value: '""'
 
+  - id: vacuum_prev_speed
+    type: std::string
+    initial_value: '""'
+
   - id: heatpump_on_since
     type: uint32_t
     initial_value: '0'
@@ -115,6 +119,21 @@ globals:
     restore_value: false
     initial_value: '0'
 
+  - id: skimmer_start_time
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
+  - id: flow_reference
+    type: float
+    restore_value: false
+    initial_value: '0'
+
+  - id: flow_low_since
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
+
 select:
   - platform: template
     name: "Pump Mode"
@@ -124,6 +143,7 @@ select:
       - "auto"
       - "manual"
       - "vacuum"
+      - "skimmer"
     initial_option: "auto"
     restore_value: true
     on_value:
@@ -132,12 +152,20 @@ select:
             if (x == "vacuum") {
               ESP_LOGI("vacuum", "Vacuum modus gestart → pomp high + klep Pool");
               // Huidige snelheid opslaan vóór vacuum overschrijft
-              id(last_pump_speed) = id(pump_speed).current_option();
-              ESP_LOGI("vacuum", "Vorige pompsnelheid opgeslagen: %s", id(last_pump_speed).c_str());
+              id(vacuum_prev_speed) = id(pump_speed).current_option();
+              ESP_LOGI("vacuum", "Vorige pompsnelheid opgeslagen: %s", id(vacuum_prev_speed).c_str());
               id(relay_pump_high).turn_on();
               id(pump_speed).publish_state("high");
               id(relay_bypass).turn_off();
               id(vacuum_start_time) = millis() / 1000;
+            }
+            if (x == "skimmer") {
+              ESP_LOGI("skimmer", "Skimmer modus gestart → pomp 30sec UIT");
+              id(vacuum_prev_speed) = id(pump_speed).current_option();
+              ESP_LOGI("skimmer", "Vorige pompsnelheid opgeslagen: %s", id(vacuum_prev_speed).c_str());
+              id(relay_pump_off).turn_on();
+              id(pump_speed).publish_state("off");
+              id(skimmer_start_time) = millis() / 1000;
             }
 
 switch:
@@ -346,6 +374,29 @@ interval:
             ESP_LOGW("flow_check", "💧 Flow rate is below 2.0 L/min (%.2f)", id(flow_rate).state);
           }
 
+          // --- SKIMMER MODUS BEWAKING ---
+          if (id(pump_mode).current_option() == "skimmer") {
+            uint32_t now = millis() / 1000;
+            if (id(skimmer_start_time) > 0 &&
+                (now - id(skimmer_start_time)) >= 30) {
+              ESP_LOGI("skimmer", "Skimmer 30sec voorbij → pompsnelheid herstellen");
+              std::string prev = id(vacuum_prev_speed);
+              if (prev == "low") {
+                id(relay_pump_low).turn_on();
+                id(pump_speed).publish_state("low");
+              } else if (prev == "high") {
+                id(relay_pump_high).turn_on();
+                id(pump_speed).publish_state("high");
+              } else {
+                id(relay_pump_med).turn_on();
+                id(pump_speed).publish_state("med");
+              }
+              ESP_LOGI("skimmer", "Pompsnelheid hersteld naar: %s", prev.empty() ? "med (fallback)" : prev.c_str());
+              id(skimmer_start_time) = 0;
+              id(pump_mode).make_call().set_option("auto").perform();
+            }
+          }
+
   - interval: 15s
     then:
       - lambda: |-
@@ -371,7 +422,7 @@ interval:
 
               // Vorige pompsnelheid herstellen via interlock-relay
               // (interlock zet relay_pump_high automatisch uit)
-              std::string prev = id(last_pump_speed);
+              std::string prev = id(vacuum_prev_speed);
               if (prev == "low") {
                 id(relay_pump_low).turn_on();
                 id(pump_speed).publish_state("low");
@@ -469,4 +520,45 @@ interval:
             id(pump_speed).publish_state(speed);
             id(flow_retry_pending) = true;
             id(flow_retry_at) = millis() / 1000;
+          }
+
+  - interval: 15s
+    then:
+      - lambda: |-
+          // --- FLOW TRENDDETECTIE ---
+          if (id(pump_mode).current_option() != "auto") return;
+          if (id(pump_speed).current_option() == "off") return;
+          if (id(flow_emergency)) return;
+
+          float flow = id(flow_rate).state;
+          if (isnan(flow)) return;
+
+          uint32_t now = millis() / 1000;
+
+          // Referentie instellen bij eerste geldige meting na snelheidswijziging
+          if (id(flow_reference) == 0 && flow > 0.5) {
+            id(flow_reference) = flow;
+            ESP_LOGI("flow_trend", "Referentie ingesteld: %.2f L/min", flow);
+            return;
+          }
+
+          if (id(flow_reference) > 0 && flow < (id(flow_reference) - 0.3)) {
+            if (id(flow_low_since) == 0) {
+              id(flow_low_since) = now;
+              ESP_LOGW("flow_trend", "Flow daling gedetecteerd: %.2f vs ref %.2f L/min",
+                       flow, id(flow_reference));
+            } else if ((now - id(flow_low_since)) >= 600) {  // 10 minuten
+              ESP_LOGE("flow_trend", "Flow trend alarm! %.2f L/min gedurende >10min (ref: %.2f)",
+                       flow, id(flow_reference));
+              id(notify_msg) = std::string("Flow daling gedetecteerd! Mogelijk verstopte sok. Huidige flow: ")
+                               + to_string((int)flow) + " L/min (normaal: " + to_string((int)id(flow_reference)) + ")";
+              id(notify_fault) = true;
+              id(notify_push) = true;
+              id(flow_low_since) = now;  // reset → max 1 alarm per 10 min
+            }
+          } else {
+            if (id(flow_low_since) > 0) {
+              ESP_LOGI("flow_trend", "Flow trend hersteld: %.2f L/min", flow);
+            }
+            id(flow_low_since) = 0;
           }
