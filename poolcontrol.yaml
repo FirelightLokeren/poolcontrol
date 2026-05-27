@@ -550,10 +550,13 @@ interval:
             } else if ((now - id(flow_low_since)) >= 600) {  // 10 minuten
               ESP_LOGE("flow_trend", "Flow trend alarm! %.2f L/min gedurende >10min (ref: %.2f)",
                        flow, id(flow_reference));
-              id(notify_msg) = std::string("Flow daling gedetecteerd! Mogelijk verstopte sok. Huidige flow: ")
-                               + to_string((int)flow) + " L/min (normaal: " + to_string((int)id(flow_reference)) + ")";
-              id(notify_fault) = true;
-              id(notify_push) = true;
+              char msg[128];
+              snprintf(msg, sizeof(msg),
+                "Flow daling: %.2f L/min (normaal: %.2f L/min). Mogelijk verstopte sok.",
+                flow, id(flow_reference));
+              id(notify_flow_msg) = std::string(msg);
+              id(notify_push_flow) = true;
+              id(notify_fault_flow) = true;
               id(flow_low_since) = now;  // reset → max 1 alarm per 10 min
             }
           } else {
@@ -562,3 +565,4 @@ interval:
             }
             id(flow_low_since) = 0;
           }
+        

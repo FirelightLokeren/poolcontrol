@@ -94,6 +94,18 @@ globals:
     type: bool
     restore_value: false
     initial_value: 'false'
+  - id: notify_push_flow
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: notify_fault_flow
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+  - id: notify_flow_msg
+    type: std::string
+    restore_value: false
+    initial_value: '""'
   - id: notify_msg
     type: std::string
     restore_value: false
@@ -214,6 +226,26 @@ interval:
                   title: "⚠️ Warmtepomp FOUT!"
                   message: !lambda 'return id(notify_msg);'
             - lambda: 'id(notify_push) = false;'
+      - if:
+          condition:
+            lambda: 'return id(notify_push_flow);'
+          then:
+            - homeassistant.service:
+                service: notify.mobile_app_gsm_koen
+                data:
+                  title: "🌊 Flow daling gedetecteerd!"
+                  message: !lambda 'return id(notify_flow_msg);'
+            - lambda: 'id(notify_push_flow) = false;'
+      - if:
+          condition:
+            lambda: 'return id(notify_fault_flow);'
+          then:
+            - homeassistant.service:
+                service: persistent_notification.create
+                data:
+                  title: "🌊 Flow FOUT!"
+                  message: !lambda 'return id(notify_flow_msg);'
+            - lambda: 'id(notify_fault_flow) = false;'
       - if:
           condition:
             lambda: 'return id(flag_heatpump_aan);'
