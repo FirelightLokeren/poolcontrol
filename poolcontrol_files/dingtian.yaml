@@ -55,6 +55,11 @@ binary_sensor:
     internal: false
     web_server:
       sorting_weight: 60
+    on_press:
+      - script.execute: water_level_high_notify
+    on_release:
+      - script.stop: water_level_high_notify
+      - lambda: id(water_level_high_notified) = false;
 
   - platform: gpio                          # INPUT 4   water level normal
     name: water level normal

@@ -134,6 +134,24 @@ globals:
     restore_value: false
     initial_value: '0'
 
+  - id: water_level_high_notified
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+script:
+  - id: water_level_high_notify
+    mode: restart
+    then:
+      - delay: 5min
+      - lambda: |-
+          if (id(input_water_level_high).state && !id(water_level_high_notified)) {
+            id(notify_msg) = std::string("Zwembad water is hoog!");
+            id(notify_fault) = true;
+            id(notify_push) = true;
+            id(water_level_high_notified) = true;
+          }
+
 select:
   - platform: template
     name: "Pump Mode"
@@ -565,4 +583,3 @@ interval:
             }
             id(flow_low_since) = 0;
           }
-        
