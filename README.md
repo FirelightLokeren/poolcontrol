@@ -1,10 +1,10 @@
 # poolcontrol
 
-ESPHome-gebaseerde poolautomatisering voor een 10m³ hexagonaal zwembad, gebouwd rond een ESP32 met Dingtian relay board, Atlas Scientific EZO probes, peristaltische doseerpompen en een W'Eau warmtepomp.
+ESPHome-based pool automation for a 10m³ hexagonal swimming pool, built around an ESP32 with a Dingtian relay board, Atlas Scientific EZO probes, a peristaltic dosing pump and a W'Eau heat pump.
 
 ---
 
-## Hardware overzicht
+## Hardware overview
 
 | Component | Model | Interface |
 |---|---|---|
@@ -12,229 +12,229 @@ ESPHome-gebaseerde poolautomatisering voor een 10m³ hexagonaal zwembad, gebouwd
 | Relay/IO board | Dingtian DTR0xx | SPI (GPIO13/14/15/16/32) |
 | pH probe | Atlas Scientific EZO-pH | I2C 0x63 |
 | ORP probe | Atlas Scientific EZO-ORP | I2C 0x62 |
-| Temperatuur dak | Atlas Scientific EZO-RTD | I2C 0x66 |
-| Temperatuur pool | Atlas Scientific EZO-RTD | I2C 0x67 |
-| Flowmeter | Atlas Scientific EZO-FLO | I2C 0x68 |
-| Chloor doseerpompe | Atlas Scientific EZO-PMP | I2C 0x64 |
-| Omgevingstemp. | Dallas DS18B20 | 1-Wire GPIO0 |
-| Warmtepomp | W'Eau WFI-005 | Local Tuya / HA |
-| Circulatiepomp | Aquaforte Vario iSaver+ | Relais (3 snelheden) |
+| Roof temperature | Atlas Scientific EZO-RTD | I2C 0x66 |
+| Pool temperature | Atlas Scientific EZO-RTD | I2C 0x67 |
+| Flow meter | Atlas Scientific EZO-FLO | I2C 0x68 |
+| Chlorine dosing pump | Atlas Scientific EZO-PMP | I2C 0x64 |
+| Ambient temperature | Dallas DS18B20 | 1-Wire GPIO0 |
+| Heat pump | W'Eau WFI-005 | Local Tuya / HA |
+| Circulation pump | Aquaforte Vario iSaver+ | Relay (3 speeds) |
 | Pool display | ACT1025 64×16 LED matrix | BLE (0D:D0:1E:CD:2F:D2) |
 
 ### I2C bus (SDA: GPIO4, SCL: GPIO5, 400kHz)
 
-| Adres | Component |
+| Address | Component |
 |---|---|
 | 0x62 | EZO-ORP |
 | 0x63 | EZO-pH |
-| 0x64 | EZO-PMP (chloor doseerpompe) |
-| 0x66 | EZO-RTD (daktemperatuur) |
-| 0x67 | EZO-RTD (pooltemperatuur) |
-| 0x68 | EZO-FLO (flowmeter) |
+| 0x64 | EZO-PMP (chlorine dosing pump) |
+| 0x66 | EZO-RTD (roof temperature) |
+| 0x67 | EZO-RTD (pool temperature) |
+| 0x68 | EZO-FLO (flow meter) |
 
-### Relais indeling (Dingtian)
+### Relay layout (Dingtian)
 
-| Relais | Functie |
+| Relay | Function |
 |---|---|
-| R1 | Niet gebruikt |
-| R2 | Circulatiepomp UIT |
-| R3 | Circulatiepomp LOW |
-| R4 | Circulatiepomp MED |
-| R5 | Circulatiepomp HIGH |
-| R6 | Niet gebruikt |
-| R7 | 3-weg klep bypass dak |
-| R8 | Niet gebruikt |
+| R1 | Not used |
+| R2 | Circulation pump OFF |
+| R3 | Circulation pump LOW |
+| R4 | Circulation pump MED |
+| R5 | Circulation pump HIGH |
+| R6 | Not used |
+| R7 | 3-way valve bypass roof |
+| R8 | Not used |
 
-### Ingangen (Dingtian)
+### Inputs (Dingtian)
 
-| Ingang | Functie |
+| Input | Function |
 |---|---|
-| I1 | 3-weg klep positie DAK |
-| I2 | 3-weg klep positie POOL |
-| I3 | Waterstand HOOG |
-| I4 | Waterstand NORMAAL |
-| I5 | Waterstand LAAG |
-| I6 | ACK 6-weg klep |
+| I1 | 3-way valve position ROOF |
+| I2 | 3-way valve position POOL |
+| I3 | Water level HIGH |
+| I4 | Water level NORMAL |
+| I5 | Water level LOW |
+| I6 | ACK 6-way valve |
 | I7 | ACK skimmer |
-| I8 | Niet gebruikt |
+| I8 | Not used |
 
 ---
 
-## Package structuur
+## Package structure
 
-De configuratie is opgesplitst in packages voor overzichtelijkheid:
+The configuration is split into packages for clarity:
 
 ```
-poolcontrol.yaml              # Hoofdconfiguratie
+poolcontrol.yaml              # Main configuration
 poolcontrol_files/
   core.yaml                   # WiFi info, uptime, hostname, restart
-  heatpump.yaml               # Warmtepomp logica, PV/batterij sturing
-  dingtian.yaml               # Relay board, ingangen, pompsturing
+  heatpump.yaml               # Heat pump logic, PV/battery control
+  dingtian.yaml               # Relay board, inputs, pump control
   display.yaml                # BLE LED display (ACT1025)
-  components/                 # Lokale ESPHome externe componenten
+  components/                 # Local ESPHome external components
 ```
 
-### Globals gedefinieerd in poolcontrol.yaml
+### Globals defined in poolcontrol.yaml
 
-De volgende globals worden door de packages gebruikt en moeten in `poolcontrol.yaml` staan:
+The following globals are used by the packages and must be defined in `poolcontrol.yaml`:
 
-| ID | Type | Gebruik |
+| ID | Type | Purpose |
 |---|---|---|
-| `flow_reference` | float | Referentieflow voor trend detectie |
-| `flow_low_since` | uint32_t | Tijdstempel lage flow detectie |
-| `water_level_high_notified` | bool | Waterstand hoog notificatie status |
+| `flow_reference` | float | Reference flow for trend detection |
+| `flow_low_since` | uint32_t | Timestamp of low flow detection |
+| `water_level_high_notified` | bool | Water level high notification state |
 
 ---
 
-## Functies
+## Features
 
-### Circulatiepomp
-- **Auto modus**: pompsnelheid gestuurd op basis van deltaTemp (dak−pool) en omgevingstemperatuur
-- **Manual modus**: manuele snelheidsinstelling via HA
-- **Vacuum modus**: forceert HIGH snelheid + klep op Pool gedurende 60 minuten, daarna terug naar auto
-- **Flow bescherming**: bij flow < 0.5 L/min worden 3 herstartpogingen gedaan; na 3 mislukte pogingen → emergency shutdown met HA-notificatie
+### Circulation pump
+- **Auto mode**: pump speed controlled based on deltaTemp (roof−pool) and ambient temperature
+- **Manual mode**: manual speed selection via HA
+- **Vacuum mode**: forces HIGH speed + valve to Pool position for 60 minutes, then returns to auto
+- **Flow protection**: at flow < 0.5 L/min, 3 restart attempts are made; after 3 failed attempts → emergency shutdown with HA notification
 
-### Warmtepomp
-- **Auto sturing**: warmtepomp AAN bij voldoende PV-overschot (>1.5 kW export) of volle batterij (SOC >80%)
-- **Minimum runtime**: 30 minuten voor uitschakeling toegelaten
-- **Batterijbeveiliging**: bij SOC-daling ≥3% zonder PV → warmtepomp UIT, pomp naar LOW
-- **Forced heating**: manuele override via HA-schakelaar
+### Heat pump
+- **Auto control**: heat pump ON when sufficient PV surplus (>1.5 kW export) or full battery (SOC >80%)
+- **Minimum runtime**: 30 minutes before shutdown is allowed
+- **Battery protection**: if SOC drops ≥3% without PV → heat pump OFF, circulation pump to LOW
+- **Forced heating**: manual override via HA switch
 
-### 3-weg klep
-- Automatisch aangestuurd op basis van deltaTemp (dak−pool)
-- Bij delta > 5°C → bypass DAK (water via dakpanelen)
-- Bij delta < 1°C → bypass POOL (water omzeilt dakpanelen)
+### 3-way valve
+- Automatically controlled based on deltaTemp (roof−pool)
+- delta > 5°C → bypass ROOF (water through solar panels)
+- delta < 1°C → bypass POOL (water bypasses solar panels)
 
-### Waterstand
-- Drie niveausensoren: HOOG, NORMAAL, LAAG
-- Bij HOOG: herhalende HA-notificatie elke 5 minuten zolang hoog
+### Water level
+- Three level sensors: HIGH, NORMAL, LOW
+- At HIGH: repeating HA notification every 5 minutes while high
 
-### Chloor dosering (EZO-PMP)
-- **Automatisch**: doseert op basis van ORP-waarde
-  - Drempelwaarden instelbaar via HA (standaard: doseer onder 650 mV, stop boven 750 mV)
-  - Minimum wachttijd tussen doses instelbaar (standaard: 30 min)
-  - Maximum dagvolume instelbaar (standaard: 500 mL)
-- **Manueel**: doseer een instelbaar volume via HA-knop
-- **Veiligheid**: dosering stopt automatisch als pomp niet bereikbaar (I2C error)
-- **Volume tracking**: persistent totaalvolume (overleeft reboots), dagvolume (reset om middernacht)
+### Chlorine dosing (EZO-PMP)
+- **Automatic**: doses based on ORP value
+  - Thresholds configurable via HA (default: dose below 650 mV, stop above 750 mV)
+  - Minimum wait time between doses configurable (default: 30 min)
+  - Maximum daily volume configurable (default: 500 mL)
+- **Manual**: dose a configurable volume via HA button
+- **Safety**: dosing stops automatically if pump is unreachable (I2C error)
+- **Volume tracking**: persistent total volume (survives reboots), daily volume (reset at midnight)
 
 ### Pool display (ACT1025)
 - BLE LED matrix 64×16 pixels
-- Toont: pooltemperatuur, pH, ORP
-- Instelbare helderheid via HA
+- Displays: pool temperature, pH, ORP
+- Adjustable brightness via HA
 
 ---
 
-## Kalibratie
+## Calibration
 
 ### pH (EZO-pH)
 
-Drievoudige kalibratie (laag/midden/hoog):
+Three-point calibration (low/mid/high):
 
-1. Druk **Clear pH Calibration** — wis oude kalibratie
-2. Dompel probe in pH 7 buffer → druk **pH 7 Calibrate**
-3. Dompel probe in pH 10 buffer → druk **pH 10 Calibrate**
-4. Dompel probe in pH 4 buffer → druk **pH 4 Calibrate**
-5. Optioneel: druk **Query pH slope** om kalibratiekwaliteit te controleren (ideaal: >95%)
+1. Press **Clear pH Calibration** — clear old calibration
+2. Submerge probe in pH 7 buffer → press **pH 7 Calibrate**
+3. Submerge probe in pH 10 buffer → press **pH 10 Calibrate**
+4. Submerge probe in pH 4 buffer → press **pH 4 Calibrate**
+5. Optional: press **Query pH slope** to check calibration quality (ideal: >95%)
 
 ### ORP (EZO-ORP)
 
-Enkelvoudige kalibratie:
+Single-point calibration:
 
-1. Druk **Clear Orp Calibration** — wis oude kalibratie
-2. Dompel probe in 225 mV ORP-standaardoplossing
-3. Druk **Orp 225mV Calibrate**
+1. Press **Clear Orp Calibration** — clear old calibration
+2. Submerge probe in 225 mV ORP standard solution
+3. Press **Orp 225mV Calibrate**
 
-### Chloor doseerpompe (EZO-PMP)
+### Chlorine dosing pump (EZO-PMP)
 
-1. **Primen**: stel Manueel Volume in op 200 mL, druk **Chloor Doseer Manueel** — herhaal tot slang vrij is van lucht
-2. **Wis kalibratie**: druk **Chloor Wis Kalibratie**
-3. **Kalibreren**:
-   - Stel Manueel Volume in op 10 mL
-   - Houd maatcilinder onder de uitgang
-   - Druk **Chloor Doseer Manueel**
-   - Meet het werkelijk gepompte volume
-   - Vul gemeten volume in bij **Chloor Kalibratie Volume (gemeten)**
-   - Druk **Chloor Stel Kalibratie In**
-4. **Verifiëren**: doe een tweede run van 10 mL en controleer of het volume klopt
+1. **Prime**: set Manual Volume to 200 mL, press **Chloor Doseer Manueel** — repeat until tube is free of air bubbles
+2. **Clear calibration**: press **Chloor Wis Kalibratie**
+3. **Calibrate**:
+   - Set Manual Volume to 10 mL
+   - Hold a measuring cylinder under the outlet
+   - Press **Chloor Doseer Manueel**
+   - Measure the actual pumped volume
+   - Enter the measured volume in **Chloor Kalibratie Volume (gemeten)**
+   - Press **Chloor Stel Kalibratie In**
+4. **Verify**: run a second 10 mL dose and check that the volume is now accurate
 
-> ⚠️ Kalibreer met water voor je de chloorlijn aansluit. Water en natriumhypochloriet hebben een vergelijkbare viscositeit, de afwijking is verwaarloosbaar.
+> ⚠️ Calibrate with water before connecting the chlorine line. Water and sodium hypochlorite have a similar viscosity; the deviation is negligible.
 
 ---
 
-## Installatie
+## Installation
 
-### Vereisten
-- Home Assistant met ESPHome add-on
+### Requirements
+- Home Assistant with ESPHome add-on
 - Secrets in `/config/esphome/secrets.yaml`:
 
 ```yaml
-wifi_ssid: "jouw_ssid"
-wifi_password: "jouw_wachtwoord"
-ap_password: "fallback_wachtwoord"
-api_key: "jouw_api_key"
+wifi_ssid: "your_ssid"
+wifi_password: "your_password"
+ap_password: "fallback_password"
+api_key: "your_api_key"
 ```
 
-### Flashen
+### Flashing
 
-**Eerste keer** (via USB):
+**First time** (via USB):
 ```bash
 esphome run poolcontrol.yaml
 ```
 
-**Daarna via OTA** vanuit ESPHome Dashboard → **Install** → **Wirelessly**
+**Subsequent updates via OTA** from ESPHome Dashboard → **Install** → **Wirelessly**
 
-### I2C adres wijzigen (EZO modules)
+### Changing I2C address (EZO modules)
 
-Om een EZO-module naar een nieuw adres te verhuizen:
+To move an EZO module to a new address:
 
-1. Koppel alle andere modules los van de I2C bus (enkel de te wijzigen module aangesloten)
-2. Voeg tijdelijk een button toe in de YAML:
+1. Disconnect all other modules from the I2C bus (only the module to be changed connected)
+2. Temporarily add a button to the YAML:
 ```yaml
 button:
   - platform: template
-    name: "Wijzig I2C adres"
+    name: "Change I2C address"
     on_press:
-      - lambda: id(ezo_sensor_id).send_custom("I2C,<decimaal_adres>");
+      - lambda: id(ezo_sensor_id).send_custom("I2C,<decimal_address>");
 ```
-3. Flash, druk de knop in, verwijder de button en flash opnieuw
-4. Pas het `address:` veld aan in de YAML
+3. Flash, press the button, remove the button and flash again
+4. Update the `address:` field in the YAML
 
-> Het EZO-commando gebruikt **decimaal** adressen: 0x64 = 100, 0x67 = 103, enz.
+> The EZO command uses **decimal** addresses: 0x64 = 100, 0x67 = 103, etc.
 
 ---
 
-## Home Assistant entiteiten
+## Home Assistant entities
 
-### Sensoren
-| Entiteit | Eenheid | Beschrijving |
+### Sensors
+| Entity | Unit | Description |
 |---|---|---|
-| pH | pH | Zuurtegraad pool |
-| ORP | mV | Redoxpotentiaal |
-| pool temp | °C | Poolwatertemperatuur (EZO-RTD) |
-| Roof temp | °C | Daktemperatuur (EZO-RTD) |
-| Delta temperature | °C | Dak − Pool temperatuur |
-| Pump Flow Rate | L/min | Berekende flowsnelheid |
-| Vrije Chloor (met temp) | ppm | Berekend vrij chloor (ORP/pH/temp) |
-| Omgeving | °C | Omgevingstemperatuur (DS18B20) |
-| Chloor Gedoseerd Vandaag | mL | Dagvolume chloor |
-| Chloor Totaal Volume Gedoseerd (persistent) | mL | Totaalvolume (reboot-bestendig) |
+| pH | pH | Pool water acidity |
+| ORP | mV | Redox potential |
+| pool temp | °C | Pool water temperature (EZO-RTD) |
+| Roof temp | °C | Roof temperature (EZO-RTD) |
+| Delta temperature | °C | Roof − Pool temperature |
+| Pump Flow Rate | L/min | Calculated flow rate |
+| Vrije Chloor (met temp) | ppm | Calculated free chlorine (ORP/pH/temp) |
+| Omgeving | °C | Ambient temperature (DS18B20) |
+| Chloor Gedoseerd Vandaag | mL | Daily chlorine volume |
+| Chloor Totaal Volume Gedoseerd (persistent) | mL | Total volume (reboot-safe) |
 
-### Schakelaars
-| Entiteit | Beschrijving |
+### Switches
+| Entity | Description |
 |---|---|
-| Automatisch Doseren | Chloor auto-dosering aan/uit |
-| Forced heating | Warmtepomp manueel forceren |
+| Automatisch Doseren | Chlorine auto-dosing on/off |
+| Forced heating | Manual heat pump override |
 
-### Selecties
-| Entiteit | Opties |
+### Selects
+| Entity | Options |
 |---|---|
 | Pump Mode | auto / manual / vacuum |
 | Pump speed | off / low / med / high |
 
 ---
 
-## Verwante repositories
+## Related repositories
 
-- [poolcontrol](https://github.com/FirelightLokeren/poolcontrol) — deze repository
+- [poolcontrol](https://github.com/FirelightLokeren/poolcontrol) — this repository
 - [esphome-pool-display](https://github.com/FirelightLokeren/esphome-pool-display) — ACT1025 BLE display component
