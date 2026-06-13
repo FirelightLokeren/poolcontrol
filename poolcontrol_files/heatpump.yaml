@@ -185,6 +185,7 @@ interval:
                 data:
                   title: "Warmtepomp AAN ☀️"
                   message: !lambda 'return id(notify_msg);'
+                  notification_id: "pool_heatpump_status"
             - lambda: 'id(notify_aan) = false;'
       - if:
           condition:
@@ -195,6 +196,7 @@ interval:
                 data:
                   title: "Warmtepomp UIT 🌙"
                   message: !lambda 'return id(notify_msg);'
+                  notification_id: "pool_heatpump_status"
             - lambda: 'id(notify_uit) = false;'
       - if:
           condition:
@@ -205,6 +207,7 @@ interval:
                 data:
                   title: "Warmtepomp manueel gewijzigd 🖐️"
                   message: !lambda 'return id(notify_msg);'
+                  notification_id: "pool_heatpump_status"
             - lambda: 'id(notify_manueel) = false;'
       - if:
           condition:
@@ -215,6 +218,7 @@ interval:
                 data:
                   title: "⚠️ Warmtepomp FOUT!"
                   message: !lambda 'return id(notify_msg);'
+                  notification_id: "pool_heatpump_fault"
             - lambda: 'id(notify_fault) = false;'
       - if:
           condition:
@@ -245,6 +249,7 @@ interval:
                 data:
                   title: "🌊 Flow FOUT!"
                   message: !lambda 'return id(notify_flow_msg);'
+                  notification_id: "pool_flow_fault"
             - lambda: 'id(notify_fault_flow) = false;'
       - if:
           condition:
