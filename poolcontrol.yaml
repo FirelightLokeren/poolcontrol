@@ -30,6 +30,20 @@ captive_portal:
 logger:
   level: DEBUG
   baud_rate: 0
+  on_message:
+    level: ERROR
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return tag != nullptr && strcmp(tag, "ezo-pmp") == 0;
+          then:
+            - globals.set:
+                id: last_error_ms
+                value: !lambda return millis();
+            - globals.set:
+                id: pomp_bereikbaar_flag
+                value: "false"
 
 api:
   encryption:
@@ -47,6 +61,15 @@ web_server:
 time:
   - platform: sntp
     id: my_time
+    on_time:
+      - seconds: 0
+        minutes: 0
+        hours: 0
+        then:
+          - globals.set:
+              id: dag_volume_gedoseerd
+              value: "0.0"
+          - logger.log: "Dagvolume teller gereset om middernacht"
 
 i2c:
   sda: 4
@@ -67,17 +90,19 @@ uart:
   baud_rate: 9600
   stop_bits: 1
 
-binary_sensor:
-  - platform: template
-    id: startup_complete
-    internal: true
+# ─── EZO-PMP (chloor, adres 0x64) ───────────────────────────────────────────
+
+ezo_pmp:
+  id: chloor
+  i2c_id: bus_a
+  address: 100        # 0x64
+  update_interval: 10s
+
+# ─── Globals ─────────────────────────────────────────────────────────────────
 
 globals:
+  # Pomp controle
   - id: last_pump_speed
-    type: std::string
-    initial_value: '""'
-
-  - id: vacuum_prev_speed
     type: std::string
     initial_value: '""'
 
@@ -119,38 +144,90 @@ globals:
     restore_value: false
     initial_value: '0'
 
-  - id: skimmer_start_time
-    type: uint32_t
-    restore_value: false
-    initial_value: '0'
-
+  # Flow trend detectie (gebruikt door dingtian.yaml)
   - id: flow_reference
     type: float
     restore_value: false
-    initial_value: '0'
+    initial_value: '0.0'
 
   - id: flow_low_since
     type: uint32_t
     restore_value: false
     initial_value: '0'
 
+  # Waterstand hoog notificatie (gebruikt door dingtian.yaml)
   - id: water_level_high_notified
     type: bool
     restore_value: false
     initial_value: 'false'
 
-script:
-  - id: water_level_high_notify
-    mode: restart
-    then:
-      - delay: 5min
-      - lambda: |-
-          if (id(input_water_level_high).state && !id(water_level_high_notified)) {
-            id(notify_msg) = std::string("Zwembad water is hoog!");
-            id(notify_fault) = true;
-            id(notify_push) = true;
-            id(water_level_high_notified) = true;
-          }
+  # Chloor pomp
+  - id: auto_dosing_enabled
+    type: bool
+    restore_value: true
+    initial_value: "true"
+
+  - id: last_dose_time
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: dag_volume_gedoseerd
+    type: float
+    restore_value: false
+    initial_value: "0.0"
+
+  - id: pomp_bereikbaar_flag
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  - id: last_error_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+  - id: prev_current_volume
+    type: float
+    restore_value: true
+    initial_value: "0.0"
+
+  - id: totaal_volume_persistent
+    type: float
+    restore_value: true
+    initial_value: "0.0"
+
+# ─── Binary sensoren ─────────────────────────────────────────────────────────
+
+binary_sensor:
+  - platform: template
+    id: startup_complete
+    internal: true
+
+  - platform: ezo_pmp
+    pump_state:
+      name: "Chloor Pomp Actief"
+      icon: mdi:pump
+    is_paused:
+      name: "Chloor Pomp Gepauzeerd"
+      icon: mdi:pause-circle
+
+  - platform: template
+    id: pomp_bereikbaar
+    name: "Chloor Pomp Bereikbaar"
+    device_class: connectivity
+    icon: mdi:lan-connect
+    lambda: |-
+      return id(pomp_bereikbaar_flag);
+    on_state:
+      then:
+        - if:
+            condition:
+              lambda: 'return !x;'
+            then:
+              - logger.log: "WAARSCHUWING: Chloor pomp niet bereikbaar (I2C read error)"
+
+# ─── Select ──────────────────────────────────────────────────────────────────
 
 select:
   - platform: template
@@ -161,7 +238,6 @@ select:
       - "auto"
       - "manual"
       - "vacuum"
-      - "skimmer"
     initial_option: "auto"
     restore_value: true
     on_value:
@@ -169,22 +245,13 @@ select:
         - lambda: |-
             if (x == "vacuum") {
               ESP_LOGI("vacuum", "Vacuum modus gestart → pomp high + klep Pool");
-              // Huidige snelheid opslaan vóór vacuum overschrijft
-              id(vacuum_prev_speed) = id(pump_speed).current_option();
-              ESP_LOGI("vacuum", "Vorige pompsnelheid opgeslagen: %s", id(vacuum_prev_speed).c_str());
               id(relay_pump_high).turn_on();
               id(pump_speed).publish_state("high");
               id(relay_bypass).turn_off();
               id(vacuum_start_time) = millis() / 1000;
             }
-            if (x == "skimmer") {
-              ESP_LOGI("skimmer", "Skimmer modus gestart → pomp 30sec UIT");
-              id(vacuum_prev_speed) = id(pump_speed).current_option();
-              ESP_LOGI("skimmer", "Vorige pompsnelheid opgeslagen: %s", id(vacuum_prev_speed).c_str());
-              id(relay_pump_off).turn_on();
-              id(pump_speed).publish_state("off");
-              id(skimmer_start_time) = millis() / 1000;
-            }
+
+# ─── Switch ──────────────────────────────────────────────────────────────────
 
 switch:
   - platform: template
@@ -192,7 +259,124 @@ switch:
     id: sw_forced_heating
     optimistic: True
 
+  - platform: template
+    id: auto_dosing_switch
+    name: "Automatisch Doseren"
+    icon: mdi:robot
+    restore_mode: RESTORE_DEFAULT_ON
+    lambda: |-
+      return id(auto_dosing_enabled);
+    turn_on_action:
+      - globals.set:
+          id: auto_dosing_enabled
+          value: "true"
+      - logger.log: "Automatisch doseren INGESCHAKELD"
+    turn_off_action:
+      - globals.set:
+          id: auto_dosing_enabled
+          value: "false"
+      - ezo_pmp.stop_dosing:
+          id: chloor
+      - logger.log: "Automatisch doseren UITGESCHAKELD — pomp gestopt"
+
+# ─── Number ──────────────────────────────────────────────────────────────────
+
+number:
+  - platform: template
+    id: manueel_volume
+    name: "Chloor Manueel Volume"
+    optimistic: true
+    restore_value: true
+    initial_value: 50
+    min_value: 1
+    max_value: 500
+    step: 0.5
+    unit_of_measurement: "mL"
+    icon: mdi:beaker
+    mode: box
+
+  - platform: template
+    id: calib_volume
+    name: "Chloor Kalibratie Volume (gemeten)"
+    optimistic: true
+    restore_value: false
+    initial_value: 10
+    min_value: 1
+    max_value: 100
+    step: 0.1
+    unit_of_measurement: "mL"
+    icon: mdi:flask
+    mode: box
+
+  - platform: template
+    id: orp_drempel_laag
+    name: "ORP Drempel (doseer onder)"
+    optimistic: true
+    restore_value: true
+    initial_value: 650
+    min_value: 400
+    max_value: 800
+    step: 10
+    unit_of_measurement: "mV"
+    icon: mdi:arrow-down-bold
+    mode: box
+
+  - platform: template
+    id: orp_drempel_hoog
+    name: "ORP Drempel (stop boven)"
+    optimistic: true
+    restore_value: true
+    initial_value: 750
+    min_value: 500
+    max_value: 900
+    step: 10
+    unit_of_measurement: "mV"
+    icon: mdi:arrow-up-bold
+    mode: box
+
+  - platform: template
+    id: auto_dose_volume
+    name: "Chloor Auto Dosis Volume"
+    optimistic: true
+    restore_value: true
+    initial_value: 30
+    min_value: 1
+    max_value: 200
+    step: 0.5
+    unit_of_measurement: "mL"
+    icon: mdi:beaker-outline
+    mode: box
+
+  - platform: template
+    id: min_wachttijd
+    name: "Chloor Min. Wachttijd Tussen Doses"
+    optimistic: true
+    restore_value: true
+    initial_value: 30
+    min_value: 5
+    max_value: 240
+    step: 5
+    unit_of_measurement: "min"
+    icon: mdi:timer-outline
+    mode: box
+
+  - platform: template
+    id: max_dag_volume
+    name: "Chloor Max Volume Per Dag"
+    optimistic: true
+    restore_value: true
+    initial_value: 500
+    min_value: 50
+    max_value: 2000
+    step: 10
+    unit_of_measurement: "mL"
+    icon: mdi:calendar-alert
+    mode: box
+
+# ─── Knoppen ─────────────────────────────────────────────────────────────────
+
 button:
+  # pH kalibratie
   - platform: template
     name: "Clear pH Calibration"
     id: ph_calibrate_clear
@@ -228,6 +412,7 @@ button:
       then:
         - lambda: id(ph_ezo).send_custom("SLOPE,?");
 
+  # ORP kalibratie
   - platform: template
     name: "Clear Orp Calibration"
     id: orp_calibrate_clear
@@ -241,6 +426,73 @@ button:
     on_press:
       then:
         - lambda: id(orp_ezo).send_custom("Cal,225");
+
+  # Chloor pomp
+  - platform: template
+    name: "Chloor Doseer Manueel"
+    icon: mdi:water-plus
+    on_press:
+      - logger.log:
+          format: "Manuele chloor dosis: %.1f mL"
+          args: ["id(manueel_volume).state"]
+      - ezo_pmp.dose_volume:
+          id: chloor
+          volume: !lambda return id(manueel_volume).state;
+
+  - platform: template
+    name: "Chloor Stop Pomp"
+    icon: mdi:stop-circle
+    on_press:
+      - ezo_pmp.stop_dosing:
+          id: chloor
+      - logger.log: "Chloor pomp handmatig gestopt"
+
+  - platform: template
+    name: "Chloor Reset Totaal Volume"
+    icon: mdi:refresh
+    on_press:
+      - ezo_pmp.clear_total_volume_dosed:
+          id: chloor
+      - logger.log: "Chloor totaal gedoseerd volume gereset"
+
+  - platform: template
+    name: "Chloor Reset Totaal Volume (persistent)"
+    icon: mdi:database-remove
+    on_press:
+      - globals.set:
+          id: totaal_volume_persistent
+          value: "0.0"
+      - logger.log: "Chloor persistente totaalteller gereset"
+
+  - platform: template
+    name: "Chloor Reset Dagvolume"
+    icon: mdi:calendar-refresh
+    on_press:
+      - globals.set:
+          id: dag_volume_gedoseerd
+          value: "0.0"
+      - logger.log: "Chloor dagvolume teller manueel gereset"
+
+  - platform: template
+    name: "Chloor Stel Kalibratie In"
+    icon: mdi:check-bold
+    on_press:
+      - logger.log:
+          format: "Chloor kalibratie instellen op %.1f mL"
+          args: ["id(calib_volume).state"]
+      - ezo_pmp.set_calibration_volume:
+          id: chloor
+          volume: !lambda return id(calib_volume).state;
+
+  - platform: template
+    name: "Chloor Wis Kalibratie"
+    icon: mdi:delete-forever
+    on_press:
+      - ezo_pmp.clear_calibration:
+          id: chloor
+      - logger.log: "Chloor kalibratie gewist"
+
+# ─── Sensoren ────────────────────────────────────────────────────────────────
 
 sensor:
   - platform: ezo
@@ -270,6 +522,7 @@ sensor:
     internal: false
     on_value:
       - lambda: id(pool_display_panel).set_orp(x);
+      - script.execute: check_auto_dosing
 
   - platform: ezo
     id: rtd_ezo_roof
@@ -322,19 +575,15 @@ sensor:
       static uint32_t last_update = 0;
       float current = id(flow_ezo).state;
       uint32_t now = millis();
-
       if (last_update == 0) {
         last_update = now;
         last_value = current;
         return NAN;
       }
-
       float delta = current - last_value;
       float time_diff = (now - last_update) / 15000.0;
-
       last_value = current;
       last_update = now;
-
       if (time_diff <= 0 || delta < 0) return NAN;
       return delta / time_diff;
     web_server:
@@ -373,87 +622,106 @@ sensor:
       if (isnan(id(ph_ezo).state) || isnan(id(orp_ezo).state) || isnan(id(rtd_ezo_pool).state)) {
         return NAN;
       }
-      float orp  = id(orp_ezo).state;
-      float ph   = id(ph_ezo).state;
+      float orp = id(orp_ezo).state;
+      float ph = id(ph_ezo).state;
       float temp = id(rtd_ezo_pool).state;
-
-      const float E0    = 770.0;
+      const float E0 = 770.0;
       const float alpha = -1.0;
-
       float temp_correction = alpha * (temp - 25.0);
       float exponent = (orp - E0 + temp_correction + 60.0 * (7.0 - ph)) / 59.0;
       return pow(10.0, exponent);
 
-interval:
-  - interval: 2s
-    then:
-      - lambda: |-
-          if (!isnan(id(flow_rate).state) && id(flow_rate).state < 2.0) {
-            ESP_LOGW("flow_check", "💧 Flow rate is below 2.0 L/min (%.2f)", id(flow_rate).state);
-          }
-
-          // --- SKIMMER MODUS BEWAKING ---
-          if (id(pump_mode).current_option() == "skimmer") {
-            uint32_t now = millis() / 1000;
-            if (id(skimmer_start_time) > 0 &&
-                (now - id(skimmer_start_time)) >= 30) {
-              ESP_LOGI("skimmer", "Skimmer 30sec voorbij → pompsnelheid herstellen");
-              std::string prev = id(vacuum_prev_speed);
-              if (prev == "low") {
-                id(relay_pump_low).turn_on();
-                id(pump_speed).publish_state("low");
-              } else if (prev == "high") {
-                id(relay_pump_high).turn_on();
-                id(pump_speed).publish_state("high");
-              } else {
-                id(relay_pump_med).turn_on();
-                id(pump_speed).publish_state("med");
+  # Chloor pomp sensoren
+  - platform: ezo_pmp
+    current_volume_dosed:
+      name: "Chloor Volume Gedoseerd (huidig)"
+      unit_of_measurement: "mL"
+      accuracy_decimals: 1
+      icon: mdi:water-percent
+      on_value:
+        then:
+          - lambda: |-
+              float delta = x - id(prev_current_volume);
+              if (delta > 0) {
+                id(totaal_volume_persistent) += delta;
+              } else if (delta < 0) {
+                id(totaal_volume_persistent) += x;
               }
-              ESP_LOGI("skimmer", "Pompsnelheid hersteld naar: %s", prev.empty() ? "med (fallback)" : prev.c_str());
-              id(skimmer_start_time) = 0;
-              id(pump_mode).make_call().set_option("auto").perform();
-            }
-          }
+              id(prev_current_volume) = x;
+    total_volume_dosed:
+      name: "Chloor Totaal Volume Gedoseerd"
+      unit_of_measurement: "mL"
+      accuracy_decimals: 1
+      icon: mdi:chart-bar
+    max_flow_rate:
+      name: "Chloor Max Flowrate"
+      unit_of_measurement: "mL/min"
+      accuracy_decimals: 1
+      icon: mdi:speedometer
 
+  - platform: template
+    id: dag_volume_sensor
+    name: "Chloor Gedoseerd Vandaag"
+    unit_of_measurement: "mL"
+    accuracy_decimals: 1
+    icon: mdi:calendar-today
+    update_interval: 10s
+    lambda: |-
+      return id(dag_volume_gedoseerd);
+
+  - platform: template
+    id: totaal_persistent_sensor
+    name: "Chloor Totaal Volume Gedoseerd (persistent)"
+    unit_of_measurement: "mL"
+    accuracy_decimals: 1
+    icon: mdi:database-clock
+    update_interval: 60s
+    lambda: |-
+      return id(totaal_volume_persistent);
+
+# ─── Text sensoren ───────────────────────────────────────────────────────────
+
+text_sensor:
+  - platform: ezo_pmp
+    dosing_mode:
+      name: "Chloor Doseer Modus"
+      icon: mdi:cog
+    calibration_status:
+      name: "Chloor Kalibratie Status"
+      icon: mdi:check-decagram
+
+# ─── Intervals ───────────────────────────────────────────────────────────────
+
+interval:
+  # Chloor pomp bereikbaar: 12s zonder error → bereikbaar
+  - interval: 1s
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return (millis() - id(last_error_ms)) >= 12000;
+          then:
+            - globals.set:
+                id: pomp_bereikbaar_flag
+                value: "true"
+
+  # Flow bescherming
   - interval: 15s
     then:
       - lambda: |-
           // --- VACUUM MODUS BEWAKING ---
           if (id(pump_mode).current_option() == "vacuum") {
             uint32_t now = millis() / 1000;
-
-            // Geforceerd high houden
             if (id(pump_speed).current_option() != "high") {
               id(relay_pump_high).turn_on();
               id(pump_speed).publish_state("high");
             }
-
-            // Klep op Pool houden
             if (id(relay_bypass).state) {
               id(relay_bypass).turn_off();
             }
-
-            // Na 60 min: snelheid herstellen en terug naar auto
             if (id(vacuum_start_time) > 0 &&
                 (now - id(vacuum_start_time)) >= 3600) {
-              ESP_LOGI("vacuum", "Vacuum modus klaar na 60 min → snelheid herstellen en terug naar auto");
-
-              // Vorige pompsnelheid herstellen via interlock-relay
-              // (interlock zet relay_pump_high automatisch uit)
-              std::string prev = id(vacuum_prev_speed);
-              if (prev == "low") {
-                id(relay_pump_low).turn_on();
-                id(pump_speed).publish_state("low");
-              } else if (prev == "high") {
-                id(relay_pump_high).turn_on();
-                id(pump_speed).publish_state("high");
-              } else {
-                // fallback naar med: dekt "med", leeg, of onbekend
-                id(relay_pump_med).turn_on();
-                id(pump_speed).publish_state("med");
-              }
-              ESP_LOGI("vacuum", "Pompsnelheid hersteld naar: %s", prev.empty() ? "med (fallback)" : prev.c_str());
-
+              ESP_LOGI("vacuum", "Vacuum modus klaar na 60 min → terug naar auto");
               id(pump_mode).make_call().set_option("auto").perform();
               id(vacuum_start_time) = 0;
             }
@@ -462,29 +730,22 @@ interval:
 
           // --- POMPBEVEILIGING BIJ LAGE FLOW ---
           if (id(pump_mode).current_option() != "auto") return;
-
           std::string speed = id(pump_speed).current_option();
           if (speed == "off") return;
-
           if (id(flow_emergency) && speed != "off") {
             ESP_LOGI("flow_protect", "Pomp herstart gedetecteerd → emergency reset");
             id(flow_emergency) = false;
             id(flow_retry_count) = 0;
             id(flow_retry_pending) = false;
           }
-
           if (id(flow_emergency)) return;
-
           float flow = id(flow_rate).state;
           if (isnan(flow)) return;
-
           uint32_t now = millis() / 1000;
-
           if (id(flow_retry_pending)) {
             if ((now - id(flow_retry_at)) < 60) return;
             id(flow_retry_pending) = false;
           }
-
           if (flow >= 0.5) {
             if (id(flow_retry_count) > 0) {
               ESP_LOGI("flow_protect", "Flow hersteld (%.2f L/min) - retry teller gereset", flow);
@@ -492,11 +753,9 @@ interval:
             }
             return;
           }
-
           id(flow_retry_count) += 1;
           ESP_LOGW("flow_protect", "Flow te laag! %.2f L/min - retry %d/3",
                    flow, id(flow_retry_count));
-
           if (id(flow_retry_count) >= 3) {
             ESP_LOGE("flow_protect", "Pump emergency shutdown na 3 retries!");
             id(flow_emergency) = true;
@@ -523,10 +782,8 @@ interval:
               id(flow_retry_count) > 0 &&
               !id(flow_emergency) &&
               id(pump_mode).current_option() == "auto") {
-
             std::string speed = id(flow_retry_speed);
             ESP_LOGI("flow_protect", "Pomp herstart na 30sec → snelheid: %s", speed.c_str());
-
             id(relay_pump_off).turn_off();
             if (speed == "low") {
               id(relay_pump_low).turn_on();
@@ -540,46 +797,87 @@ interval:
             id(flow_retry_at) = millis() / 1000;
           }
 
-  - interval: 15s
+  - interval: 2s
     then:
       - lambda: |-
-          // --- FLOW TRENDDETECTIE ---
-          if (id(pump_mode).current_option() != "auto") return;
-          if (id(pump_speed).current_option() == "off") return;
-          if (id(flow_emergency)) return;
-
-          float flow = id(flow_rate).state;
-          if (isnan(flow)) return;
-
-          uint32_t now = millis() / 1000;
-
-          // Referentie instellen bij eerste geldige meting na snelheidswijziging
-          if (id(flow_reference) == 0 && flow > 0.5) {
-            id(flow_reference) = flow;
-            ESP_LOGI("flow_trend", "Referentie ingesteld: %.2f L/min", flow);
-            return;
+          if (!isnan(id(flow_rate).state) && id(flow_rate).state < 2.0) {
+            ESP_LOGW("flow_check", "💧 Flow rate is below 2.0 L/min (%.2f)", id(flow_rate).state);
           }
 
-          if (id(flow_reference) > 0 && flow < (id(flow_reference) - 0.3)) {
-            if (id(flow_low_since) == 0) {
-              id(flow_low_since) = now;
-              ESP_LOGW("flow_trend", "Flow daling gedetecteerd: %.2f vs ref %.2f L/min",
-                       flow, id(flow_reference));
-            } else if ((now - id(flow_low_since)) >= 600) {  // 10 minuten
-              ESP_LOGE("flow_trend", "Flow trend alarm! %.2f L/min gedurende >10min (ref: %.2f)",
-                       flow, id(flow_reference));
-              char msg[128];
-              snprintf(msg, sizeof(msg),
-                "Flow daling: %.2f L/min (normaal: %.2f L/min). Mogelijk verstopte sok.",
-                flow, id(flow_reference));
-              id(notify_flow_msg) = std::string(msg);
-              id(notify_push_flow) = true;
-              id(notify_fault_flow) = true;
-              id(flow_low_since) = now;  // reset → max 1 alarm per 10 min
-            }
-          } else {
-            if (id(flow_low_since) > 0) {
-              ESP_LOGI("flow_trend", "Flow trend hersteld: %.2f L/min", flow);
-            }
-            id(flow_low_since) = 0;
-          }
+# ─── Scripts ─────────────────────────────────────────────────────────────────
+
+script:
+  # Waterstand hoog notificatie (herhaald elke 5 min zolang hoog)
+  - id: water_level_high_notify
+    mode: restart
+    then:
+      - homeassistant.service:
+          service: persistent_notification.create
+          data:
+            title: "💧 Waterstand te hoog!"
+            message: "Pool waterstand is te hoog. Controleer onmiddellijk."
+            notification_id: "pool_water_level_high"
+      - globals.set:
+          id: water_level_high_notified
+          value: "true"
+      - delay: 5min
+      - if:
+          condition:
+            lambda: 'return id(input_water_level_high).state;'
+          then:
+            - script.execute: water_level_high_notify
+
+  # Automatisch doseren op basis van ORP
+  - id: check_auto_dosing
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return id(auto_dosing_enabled);
+          then:
+            - if:
+                condition:
+                  lambda: |-
+                    uint32_t nu = millis() / 1000;
+                    uint32_t wacht_sec = (uint32_t)(id(min_wachttijd).state * 60);
+                    bool pomp_ok = id(pomp_bereikbaar).state;
+                    bool orp_te_laag = id(orp_ezo).state < id(orp_drempel_laag).state;
+                    bool wachttijd_ok = (nu - id(last_dose_time)) >= wacht_sec;
+                    bool dag_ok = (id(dag_volume_gedoseerd) + id(auto_dose_volume).state) <= id(max_dag_volume).state;
+                    return pomp_ok && orp_te_laag && wachttijd_ok && dag_ok;
+                then:
+                  - logger.log:
+                      format: "ORP %.0f mV < drempel %.0f mV → doseren %.1f mL (vandaag al %.1f / %.1f mL)"
+                      args:
+                        - "id(orp_ezo).state"
+                        - "id(orp_drempel_laag).state"
+                        - "id(auto_dose_volume).state"
+                        - "id(dag_volume_gedoseerd)"
+                        - "id(max_dag_volume).state"
+                  - globals.set:
+                      id: last_dose_time
+                      value: !lambda return millis() / 1000;
+                  - globals.set:
+                      id: dag_volume_gedoseerd
+                      value: !lambda return id(dag_volume_gedoseerd) + id(auto_dose_volume).state;
+                  - ezo_pmp.dose_volume:
+                      id: chloor
+                      volume: !lambda return id(auto_dose_volume).state;
+                else:
+                  - if:
+                      condition:
+                        lambda: 'return !id(pomp_bereikbaar).state;'
+                      then:
+                        - logger.log: "Automatisch doseren overgeslagen: chloor pomp niet bereikbaar"
+                  - if:
+                      condition:
+                        lambda: |-
+                          return id(pomp_bereikbaar).state &&
+                                 (id(dag_volume_gedoseerd) + id(auto_dose_volume).state) > id(max_dag_volume).state;
+                      then:
+                        - logger.log:
+                            format: "Dagmaximum bereikt: %.1f / %.1f mL — automatisch doseren geblokkeerd"
+                            args:
+                              - "id(dag_volume_gedoseerd)"
+                              - "id(max_dag_volume).state"
