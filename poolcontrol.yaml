@@ -705,7 +705,7 @@ interval:
                 id: pomp_bereikbaar_flag
                 value: "true"
 
-  # Flow bescherming
+  # Flow bescherming + vacuum bewaking
   - interval: 15s
     then:
       - lambda: |-
@@ -845,7 +845,8 @@ script:
                     bool orp_te_laag = id(orp_ezo).state < id(orp_drempel_laag).state;
                     bool wachttijd_ok = (nu - id(last_dose_time)) >= wacht_sec;
                     bool dag_ok = (id(dag_volume_gedoseerd) + id(auto_dose_volume).state) <= id(max_dag_volume).state;
-                    return pomp_ok && orp_te_laag && wachttijd_ok && dag_ok;
+                    bool flow_ok = !isnan(id(flow_rate).state) && id(flow_rate).state >= 1.0;
+                    return pomp_ok && orp_te_laag && wachttijd_ok && dag_ok && flow_ok;
                 then:
                   - logger.log:
                       format: "ORP %.0f mV < drempel %.0f mV → doseren %.1f mL (vandaag al %.1f / %.1f mL)"
@@ -881,3 +882,10 @@ script:
                             args:
                               - "id(dag_volume_gedoseerd)"
                               - "id(max_dag_volume).state"
+                  - if:
+                      condition:
+                        lambda: |-
+                          return id(pomp_bereikbaar).state &&
+                                 (isnan(id(flow_rate).state) || id(flow_rate).state < 1.0);
+                      then:
+                        - logger.log: "Automatisch doseren overgeslagen: geen flow gedetecteerd"
