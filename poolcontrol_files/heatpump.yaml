@@ -134,6 +134,10 @@ globals:
     type: bool
     restore_value: false
     initial_value: 'false'
+  - id: heatpump_preset_target
+    type: std::string
+    restore_value: false
+    initial_value: '"auto"'
 
 text_sensor:
   - platform: homeassistant
@@ -264,7 +268,7 @@ interval:
                 service: climate.set_preset_mode
                 data:
                   entity_id: climate.w_eau_pool_heatpump
-                  preset_mode: auto
+                  preset_mode: !lambda 'return id(heatpump_preset_target);'
             - lambda: 'id(flag_heatpump_aan) = false;'
       - if:
           condition:
@@ -349,16 +353,26 @@ interval:
 
           // --- AANZETTEN (energie beschikbaar, warmtepomp nog niet aan) ---
           if (heeft_energie && !id(heatpump_auto_on)) {
-            ESP_LOGI("heatpump_auto", "Warmtepomp AAN → export:%.2fkW soc:%.0f%% target:%.0f°C",
-                     export_, soc, id(local_heatpump_target_temp).state);
-            id(heatpump_on_since) = now;
-            id(heatpump_auto_on)  = true;
+            // Kies preset op basis van pooltemperatuur vs doeltemperatuur
+            float pool_temp = id(water_temperature).state;
+            float target    = id(local_heatpump_target_temp).state;
+            bool temp_bereikt = !isnan(pool_temp) && pool_temp >= target;
+            std::string preset = temp_bereikt ? "auto" : "quick_heat";
+
+            ESP_LOGI("heatpump_auto",
+              "Warmtepomp AAN → export:%.2fkW soc:%.0f%% pool:%.1f°C target:%.0f°C preset:%s",
+              export_, soc, pool_temp, target, preset.c_str());
+
+            id(heatpump_on_since)  = now;
+            id(heatpump_auto_on)   = true;
             id(prev_heatpump_mode) = std::string("heat_cool");
-            id(flag_heatpump_aan) = true;
+            id(heatpump_preset_target) = preset;
+            id(flag_heatpump_aan)  = true;
+
             char msg[128];
             snprintf(msg, sizeof(msg),
-              "AAN: export:%.2fkW soc:%.0f%% target:%.0f°C",
-              export_, soc, id(local_heatpump_target_temp).state);
+              "AAN: export:%.2fkW soc:%.0f%% pool:%.1f°C target:%.0f°C preset:%s",
+              export_, soc, pool_temp, target, preset.c_str());
             id(notify_msg) = std::string(msg);
             id(notify_aan) = true;
           }
