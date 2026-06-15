@@ -138,6 +138,10 @@ globals:
     type: std::string
     restore_value: false
     initial_value: '"auto"'
+  - id: overschot_since
+    type: uint32_t
+    restore_value: false
+    initial_value: '0'
 
 text_sensor:
   - platform: homeassistant
@@ -348,11 +352,26 @@ interval:
           bool batterij_vol        = (soc > 80.0 && pv > 500.0);
           bool heeft_energie       = voldoende_overschot || batterij_vol;
 
+          // --- STABILITEITCHECK: overschot moet minstens 5 min stabiel zijn ---
+          if (heeft_energie) {
+            if (id(overschot_since) == 0) {
+              id(overschot_since) = now;
+              ESP_LOGI("heatpump_auto", "Overschot gedetecteerd, wachten op stabiliteit (5 min)");
+            }
+          } else {
+            if (id(overschot_since) > 0) {
+              ESP_LOGI("heatpump_auto", "Overschot weggevallen na %lus → timer gereset",
+                       (unsigned long)(now - id(overschot_since)));
+            }
+            id(overschot_since) = 0;
+          }
+          bool stabiel = (id(overschot_since) > 0 && (now - id(overschot_since)) >= 300);
+
           bool min_runtime_ok = (id(heatpump_on_since) == 0 ||
                                  (now - id(heatpump_on_since)) > 1800);
 
-          // --- AANZETTEN (energie beschikbaar, warmtepomp nog niet aan) ---
-          if (heeft_energie && !id(heatpump_auto_on)) {
+          // --- AANZETTEN (energie stabiel beschikbaar, warmtepomp nog niet aan) ---
+          if (heeft_energie && stabiel && !id(heatpump_auto_on)) {
             // Kies preset op basis van pooltemperatuur vs doeltemperatuur
             float pool_temp = id(water_temperature).state;
             float target    = id(local_heatpump_target_temp).state;
@@ -360,14 +379,15 @@ interval:
             std::string preset = temp_bereikt ? "auto" : "quick_heat";
 
             ESP_LOGI("heatpump_auto",
-              "Warmtepomp AAN → export:%.2fkW soc:%.0f%% pool:%.1f°C target:%.0f°C preset:%s",
-              export_, soc, pool_temp, target, preset.c_str());
+              "Warmtepomp AAN → export:%.2fkW soc:%.0f%% pool:%.1f°C target:%.0f°C preset:%s (stabiel %lus)",
+              export_, soc, pool_temp, target, preset.c_str(),
+              (unsigned long)(now - id(overschot_since)));
 
-            id(heatpump_on_since)  = now;
-            id(heatpump_auto_on)   = true;
-            id(prev_heatpump_mode) = std::string("heat_cool");
+            id(heatpump_on_since)      = now;
+            id(heatpump_auto_on)       = true;
+            id(prev_heatpump_mode)     = std::string("heat_cool");
             id(heatpump_preset_target) = preset;
-            id(flag_heatpump_aan)  = true;
+            id(flag_heatpump_aan)      = true;
 
             char msg[128];
             snprintf(msg, sizeof(msg),
@@ -381,10 +401,11 @@ interval:
           else if (id(heatpump_auto_on) && !heeft_energie && min_runtime_ok) {
             ESP_LOGI("heatpump_auto", "Warmtepomp UIT → export:%.2fkW soc:%.0f%%",
                      export_, soc);
-            id(heatpump_on_since) = 0;
-            id(heatpump_auto_on)  = false;
+            id(heatpump_on_since)  = 0;
+            id(heatpump_auto_on)   = false;
+            id(overschot_since)    = 0;
             id(prev_heatpump_mode) = std::string("off");
-            id(flag_heatpump_uit) = true;
+            id(flag_heatpump_uit)  = true;
             char msg[128];
             snprintf(msg, sizeof(msg),
               "UIT: export:%.2fkW soc:%.0f%%",
@@ -415,8 +436,9 @@ interval:
             ESP_LOGW("battery_pump", "Batterij ontlaadt zonder PV (%.0f%% → %.0f%%) → warmtepomp UIT",
                      id(prev_soc), soc);
             id(flag_heatpump_uit) = true;
-            id(heatpump_auto_on) = false;
+            id(heatpump_auto_on)  = false;
             id(heatpump_on_since) = 0;
+            id(overschot_since)   = 0;
             // Pomp naar low in auto mode (tenzij al off of low, of flow emergency)
             if (id(pump_mode).current_option() == "auto" && !id(flow_emergency)) {
               std::string speed = id(pump_speed).current_option();
