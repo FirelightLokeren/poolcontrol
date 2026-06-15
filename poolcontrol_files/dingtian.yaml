@@ -338,8 +338,9 @@ interval:
           if (current_speed != id(last_pump_speed)) {
             id(last_pump_speed) = current_speed;
             id(pump_speed).publish_state(current_speed);
-            // Snelheid gewijzigd → flow referentie resetten
+            // Snelheid gewijzigd → flow referentie resetten + timestamp opslaan
             id(flow_reference) = 0;
             id(flow_low_since) = 0;
+            id(flow_speed_changed_at) = millis() / 1000;
             ESP_LOGI("flow_trend", "Snelheid gewijzigd naar %s → referentie gereset", current_speed.c_str());
           }
