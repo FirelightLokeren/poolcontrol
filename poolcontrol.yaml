@@ -160,6 +160,11 @@ globals:
     restore_value: false
     initial_value: '0'
 
+  - id: backwash_prev_speed
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+
   # Flow trend detectie (gebruikt door dingtian.yaml)
   - id: flow_reference
     type: float
@@ -255,6 +260,7 @@ select:
       - "manual"
       - "vacuum"
       - "skimmer"
+      - "backwash"
     initial_option: "auto"
     restore_value: true
     on_value:
@@ -518,6 +524,20 @@ button:
       - ezo_pmp.clear_calibration:
           id: chloor
       - logger.log: "Chloor kalibratie gewist"
+
+# Filter (backspoelen/naspoelen)
+  - platform: template
+    name: "Filter"
+    id: btn_filter_backwash
+    icon: mdi:filter-variant
+    on_press:
+      - if:
+          condition:
+            lambda: 'return id(pump_mode).current_option() == "auto";'
+          then:
+            - script.execute: backwash_sequence
+          else:
+            - logger.log: "Filter: niet gestart, pomp_mode staat niet op auto"
 
 # ─── Sensoren ────────────────────────────────────────────────────────────────
 
@@ -1000,3 +1020,52 @@ script:
                                  (isnan(id(flow_rate).state) || id(flow_rate).state < 1.0);
                       then:
                         - logger.log: "Automatisch doseren overgeslagen: geen flow gedetecteerd"
+# Filter: backspoelen + naspoelen
+  - id: backwash_sequence
+    mode: single
+    then:
+      - logger.log: "Filter: backspoelcyclus gestart"
+      - globals.set:
+          id: backwash_prev_speed
+          value: !lambda return id(pump_speed).current_option();
+      - select.set:
+          id: pump_mode
+          option: "backwash"
+
+      - select.set:
+          id: pump_speed
+          option: "off"
+      - delay: 5s
+
+      - logger.log: "Filter: backwash - high speed (60s)"
+      - select.set:
+          id: pump_speed
+          option: "high"
+      - delay: 60s
+
+      - select.set:
+          id: pump_speed
+          option: "off"
+      - delay: 5s
+
+      - logger.log: "Filter: rinse - high speed (30s)"
+      - select.set:
+          id: pump_speed
+          option: "high"
+      - delay: 30s
+
+      - select.set:
+          id: pump_speed
+          option: "off"
+      - delay: 5s
+
+      - lambda: |-
+          std::string prev = id(backwash_prev_speed);
+          if (prev.empty()) prev = "med";
+          id(pump_speed).make_call().set_option(prev).perform();
+      - logger.log:
+          format: "Filter: cyclus klaar - snelheid hersteld naar %s"
+          args: ["id(backwash_prev_speed).c_str()"]
+      - select.set:
+          id: pump_mode
+          option: "auto"
