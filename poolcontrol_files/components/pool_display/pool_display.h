@@ -284,6 +284,31 @@ struct Framebuffer {
     draw_string(x,y,s,col);
   }
 
+  // ── Scaled glyphs (used for the full-screen clock page) ──────────────────
+  void draw_glyph_scaled(int x, int y, const uint8_t glyph[5], Color col, int scale) {
+    for(int r=0;r<5;r++){
+      uint8_t b=glyph[r];
+      for(int c=0;c<3;c++){
+        if(b&(0x4>>c)){
+          for(int sy=0;sy<scale;sy++)
+            for(int sx=0;sx<scale;sx++)
+              set(x+c*scale+sx, y+r*scale+sy, col);
+        }
+      }
+    }
+  }
+
+  int draw_char_scaled(int x, int y, char c, Color col, int scale) {
+    if(c>='0'&&c<='9'){ draw_glyph_scaled(x,y,FONT_DIGITS[c-'0'],col,scale); return 4*scale; }
+    if(c==':'){ draw_glyph_scaled(x,y,FONT_COLON,col,scale); return 3*scale; }
+    if(c=='-'){ draw_glyph_scaled(x,y,FONT_MINUS,col,scale); return 4*scale; }
+    return 4*scale; // unknown: skip
+  }
+
+  void draw_string_scaled(int x, int y, const char *s, Color col, int scale) {
+    while(*s){ x+=draw_char_scaled(x,y,*s,col,scale); s++; }
+  }
+
   std::vector<uint8_t> to_frame(bool rotate180 = false) const {
     if (!rotate180) {
       auto png = make_png(&px[0][0], W, H);
@@ -357,9 +382,16 @@ class PoolDisplay : public Component, public ble_client::BLEClientNode {
     enqueue_({5,0,4,0x80,v}, WType::CMD);
   }
 
-  void set_temperature(float v) { temp_=v; redraw_(); }
-  void set_ph(float v)          { ph_=v;   redraw_(); }
-  void set_orp(float v)         { orp_=v;  redraw_(); }
+  void set_temperature(float v) { temp_=v; if(current_page_==Page::SENSORS) redraw_(); }
+  void set_ph(float v)          { ph_=v;   if(current_page_==Page::SENSORS) redraw_(); }
+  void set_orp(float v)         { orp_=v;  if(current_page_==Page::SENSORS) redraw_(); }
+
+  void set_time(int hour, int minute) {
+    time_h_=hour; time_m_=minute; time_valid_=true;
+    if(current_page_==Page::CLOCK) redraw_();
+  }
+
+  void set_page_seconds(uint8_t s) { page_interval_ms_=(uint32_t)s*1000; }
 
   void setup() override {
     ESP_LOGCONFIG(TAG,"Pool Display setup");
@@ -375,6 +407,16 @@ class PoolDisplay : public Component, public ble_client::BLEClientNode {
     if(write_pending_&&millis()-last_write_ms_>3000){
       ESP_LOGW(TAG,"Write timeout");
       write_pending_=false;
+    }
+
+    // Page cycling: alternate sensors ⇄ clock every page_interval_ms_
+    if(handshake_done_){
+      uint32_t now=millis();
+      if(now-page_last_switch_ms_>=page_interval_ms_){
+        page_last_switch_ms_=now;
+        current_page_=(current_page_==Page::SENSORS)?Page::CLOCK:Page::SENSORS;
+        redraw_();
+      }
     }
 
     // Drain queue
@@ -394,6 +436,14 @@ class PoolDisplay : public Component, public ble_client::BLEClientNode {
   uint8_t brightness_{70};
   bool    rotated_{false};
   float   temp_{NAN}, ph_{NAN}, orp_{NAN};
+
+  // Clock page
+  enum class Page { SENSORS, CLOCK };
+  Page     current_page_{Page::SENSORS};
+  uint32_t page_last_switch_ms_{0};
+  uint32_t page_interval_ms_{5000};
+  int      time_h_{0}, time_m_{0};
+  bool     time_valid_{false};
 
   bool    connected_{false};
   bool    handshake_done_{false};
@@ -481,6 +531,8 @@ class PoolDisplay : public Component, public ble_client::BLEClientNode {
   }
 
   void on_ready_() {
+    current_page_=Page::SENSORS;
+    page_last_switch_ms_=millis();
     enqueue_({5,0,4,0x80,brightness_}, WType::CMD);
     redraw_();
   }
@@ -491,6 +543,14 @@ class PoolDisplay : public Component, public ble_client::BLEClientNode {
     if(!connected_||!handshake_done_) return;
     if(!frame_ack_) return;  // previous frame still in flight
 
+    if(current_page_==Page::CLOCK) draw_clock_();
+    else                           draw_sensors_();
+
+    frame_ack_=false;
+    enqueue_(fb_.to_frame(rotated_), WType::FRAME);
+  }
+
+  void draw_sensors_(){
     fb_.clear(COL_BLACK);
 
     // Layout: 3 columns across 64px
@@ -557,9 +617,22 @@ class PoolDisplay : public Component, public ble_client::BLEClientNode {
     fb_.draw_string(48, 9, "ORP", COL_GRAY);
 
     // No dividers — spacing between columns is sufficient
+  }
 
-    frame_ack_=false;
-    enqueue_(fb_.to_frame(rotated_), WType::FRAME);
+  void draw_clock_(){
+    fb_.clear(COL_BLACK);
+
+    char buf[6];
+    if(time_valid_) snprintf(buf,sizeof(buf),"%02d:%02d",time_h_,time_m_);
+    else            snprintf(buf,sizeof(buf),"--:--");
+
+    // "HH:MM" at scale 2: 4 digits (8px each) + 1 colon (6px) = 38px wide, 10px tall
+    const int scale = 2;
+    const int total_w = 4*scale*4 + 3*scale;   // 4 digits + 1 colon
+    const int total_h = 5*scale;
+    int x = (W-total_w)/2;
+    int y = (H-total_h)/2;
+    fb_.draw_string_scaled(x, y, buf, COL_WHITE, scale);
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────────

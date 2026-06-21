@@ -19,6 +19,18 @@ pool_display:
   id: pool_display_panel
   ble_client_id: panel_ble
   brightness: 70
+  page_seconds: 5   # hoe lang elk scherm getoond wordt (sensoren / klok)
+
+# Tijd doorgeven aan de display (gebruikt het bestaande "my_time" component
+# uit poolcontrol.yaml, dus hier geen aparte time: nodig)
+interval:
+  - interval: 30s
+    then:
+      - lambda: |-
+          auto t = id(my_time).now();
+          if (t.is_valid()) {
+            id(pool_display_panel).set_time(t.hour, t.minute);
+          }
 
 binary_sensor:
   - platform: template
