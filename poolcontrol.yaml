@@ -61,6 +61,7 @@ web_server:
 time:
   - platform: sntp
     id: my_time
+    timezone: "Europe/Brussels"
     on_time:
       - seconds: 0
         minutes: 0
