@@ -914,8 +914,9 @@ interval:
   - interval: 2s
     then:
       - lambda: |-
-          if (!isnan(id(flow_rate).state) && id(flow_rate).state < 2.0) {
-            ESP_LOGW("flow_check", "💧 Flow rate is below 2.0 L/min (%.2f)", id(flow_rate).state);
+          float flow_drempel = id(bypass_cooling_override) ? 1.5f : 2.0f;
+          if (!isnan(id(flow_rate).state) && id(flow_rate).state < flow_drempel) {
+            ESP_LOGW("flow_check", "💧 Flow rate is below %.1f L/min (%.2f)", flow_drempel, id(flow_rate).state);
           }
 
           // --- SKIMMER MODUS BEWAKING ---
@@ -962,6 +963,9 @@ interval:
                 "Pool te warm (%.1f°C > %.0f°C - 0.5) → bypass geforceerd AAN (Roof)",
                 pool, target_cool);
               id(bypass_cooling_override) = true;
+              id(flow_reference) = 0;
+              id(flow_speed_changed_at) = millis() / 1000;
+              ESP_LOGI("cooling_bypass", "Flow referentie gereset (route wijziging naar Roof)");
             }
             if (!id(relay_bypass).state) {
               id(relay_bypass).turn_on();
@@ -973,6 +977,9 @@ interval:
                 "Pool afgekoeld (%.1f°C ≤ %.0f°C - 0.5) → bypass vrijgegeven",
                 pool, target_cool);
               id(bypass_cooling_override) = false;
+              id(flow_reference) = 0;
+              id(flow_speed_changed_at) = millis() / 1000;
+              ESP_LOGI("cooling_bypass", "Flow referentie gereset (route wijziging naar Pool)");
             }
           }
 
