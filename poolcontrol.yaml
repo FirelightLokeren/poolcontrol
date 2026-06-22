@@ -945,44 +945,32 @@ interval:
     then:
       - lambda: |-
           // --- DAK BYPASS OVERRIDE BIJ KOELING ---
-          // Als pool te warm is én dak koeler dan pool → ventiel op Pool (bypass dak)
-          // Als dak warmer dan pool → bypass aan zodat EPDM niet overkookt
+          // Zolang pool boven koeldrempel - 0.5°C zit → bypass altijd blokkeren
+          // zodat het dak het bad niet bijverwarmt via de delta_temp_trigger.
+          // Bypass wordt pas vrijgegeven als pool écht afgekoeld is.
           if (isnan(id(water_temperature).state)      ||
-              isnan(id(ha_heatpump_target_temp).state) ||
-              isnan(id(rtd_ezo_roof).state)) return;
+              isnan(id(ha_heatpump_target_temp).state)) return;
 
           float pool        = id(water_temperature).state;
           float target_cool = id(ha_heatpump_target_temp).state;
-          float dak         = id(rtd_ezo_roof).state;
 
-          bool te_warm       = pool > (target_cool + 0.5f);
-          bool dak_warmer    = dak > pool;
+          bool bypass_blokkeren = pool > (target_cool - 0.5f);
 
-          if (te_warm && !dak_warmer) {
-            // Pool te warm én dak koeler → bypass blokkeren
+          if (bypass_blokkeren) {
             if (!id(bypass_cooling_override)) {
               ESP_LOGI("cooling_bypass",
-                "Pool te warm (%.1f°C > %.0f°C) en dak koeler (%.1f°C) → bypass geblokkeerd",
-                pool, target_cool, dak);
+                "Pool te warm (%.1f°C > %.0f°C - 0.5) → bypass geblokkeerd",
+                pool, target_cool);
               id(bypass_cooling_override) = true;
             }
             if (id(relay_bypass).state) {
               id(relay_bypass).turn_off();
               ESP_LOGI("cooling_bypass", "relay_bypass UIT (ventiel naar Pool)");
             }
-          } else if (te_warm && dak_warmer) {
-            // Pool te warm maar dak warmer → bypass toestaan zodat EPDM niet overkookt
-            if (id(bypass_cooling_override)) {
-              ESP_LOGI("cooling_bypass",
-                "Dak warmer dan pool (%.1f°C > %.1f°C) → bypass vrijgegeven (EPDM bescherming)",
-                dak, pool);
-              id(bypass_cooling_override) = false;
-            }
           } else {
-            // Pool op temperatuur → vrijgeven
             if (id(bypass_cooling_override)) {
               ESP_LOGI("cooling_bypass",
-                "Pool afgekoeld (%.1f°C ≤ %.0f°C) → bypass volledig vrijgegeven",
+                "Pool afgekoeld (%.1f°C ≤ %.0f°C - 0.5) → bypass vrijgegeven",
                 pool, target_cool);
               id(bypass_cooling_override) = false;
             }
@@ -1122,4 +1110,3 @@ script:
       - select.set:
           id: pump_mode
           option: "auto"
-          
