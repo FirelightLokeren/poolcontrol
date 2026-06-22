@@ -182,6 +182,12 @@ globals:
     restore_value: false
     initial_value: 'false'
 
+  # Dakkoeling override
+  - id: bypass_cooling_override
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
   # Chloor pomp
   - id: auto_dosing_enabled
     type: bool
@@ -1069,3 +1075,50 @@ script:
       - select.set:
           id: pump_mode
           option: "auto"
+
+  - interval: 60s
+    then:
+      - lambda: |-
+          // --- DAK BYPASS OVERRIDE BIJ KOELING ---
+          // Als pool te warm is én dak koeler dan pool → ventiel op Pool (bypass dak)
+          // Als dak warmer dan pool → bypass aan zodat EPDM niet overkookt
+          if (isnan(id(water_temperature).state)      ||
+              isnan(id(ha_heatpump_target_temp).state) ||
+              isnan(id(rtd_ezo_roof).state)) return;
+
+          float pool        = id(water_temperature).state;
+          float target_cool = id(ha_heatpump_target_temp).state;
+          float dak         = id(rtd_ezo_roof).state;
+
+          bool te_warm       = pool > (target_cool + 0.5f);
+          bool dak_warmer    = dak > pool;
+
+          if (te_warm && !dak_warmer) {
+            // Pool te warm én dak koeler → bypass blokkeren
+            if (!id(bypass_cooling_override)) {
+              ESP_LOGI("cooling_bypass",
+                "Pool te warm (%.1f°C > %.0f°C) en dak koeler (%.1f°C) → bypass geblokkeerd",
+                pool, target_cool, dak);
+              id(bypass_cooling_override) = true;
+            }
+            if (id(relay_bypass).state) {
+              id(relay_bypass).turn_off();
+              ESP_LOGI("cooling_bypass", "relay_bypass UIT (ventiel naar Pool)");
+            }
+          } else if (te_warm && dak_warmer) {
+            // Pool te warm maar dak warmer → bypass toestaan zodat EPDM niet overkookt
+            if (id(bypass_cooling_override)) {
+              ESP_LOGI("cooling_bypass",
+                "Dak warmer dan pool (%.1f°C > %.1f°C) → bypass vrijgegeven (EPDM bescherming)",
+                dak, pool);
+              id(bypass_cooling_override) = false;
+            }
+          } else {
+            // Pool op temperatuur → vrijgeven
+            if (id(bypass_cooling_override)) {
+              ESP_LOGI("cooling_bypass",
+                "Pool afgekoeld (%.1f°C ≤ %.0f°C) → bypass volledig vrijgegeven",
+                pool, target_cool);
+              id(bypass_cooling_override) = false;
+            }
+          }
