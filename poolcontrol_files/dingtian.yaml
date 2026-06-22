@@ -144,7 +144,13 @@ binary_sensor:
     on_press:
       - switch.turn_on: relay_bypass
     on_release:
-      - switch.turn_off: relay_bypass
+      - lambda: |-
+          // Bypass uitzetten alleen als koeling override niet actief is
+          if (!id(bypass_cooling_override)) {
+            id(relay_bypass).turn_off();
+          } else {
+            ESP_LOGI("delta_temp", "Bypass blijft AAN door koeloverride (EPDM bescherming)");
+          }
     internal: true
 
 
