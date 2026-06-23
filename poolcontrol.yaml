@@ -70,7 +70,24 @@ time:
           - globals.set:
               id: dag_volume_gedoseerd
               value: "0.0"
+          - globals.set:
+              id: last_dose_day
+              value: !lambda return id(my_time).now().day_of_year;
           - logger.log: "Dagvolume teller gereset om middernacht"
+    on_time_sync:
+      then:
+        - lambda: |-
+            auto now = id(my_time).now();
+            if (now.is_valid()) {
+              int today = now.day_of_year;
+              if (id(last_dose_day) != today) {
+                id(dag_volume_gedoseerd) = 0.0;
+                id(last_dose_day) = today;
+                ESP_LOGI("chlorine", "Nieuwe dag gedetecteerd na reboot → dagvolume gereset");
+              } else {
+                ESP_LOGI("chlorine", "Zelfde dag na reboot → dagvolume hersteld: %.1f mL", id(dag_volume_gedoseerd));
+              }
+            }
 
 i2c:
   sda: 4
@@ -201,8 +218,13 @@ globals:
 
   - id: dag_volume_gedoseerd
     type: float
-    restore_value: false
+    restore_value: true
     initial_value: "0.0"
+
+  - id: last_dose_day
+    type: int
+    restore_value: true
+    initial_value: "-1"
 
   - id: pomp_bereikbaar_flag
     type: bool
