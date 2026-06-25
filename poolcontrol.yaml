@@ -743,6 +743,25 @@ sensor:
     update_interval: 10s
     lambda: |-
       return id(dag_volume_gedoseerd);
+    on_value:
+      - if:
+          condition:
+            lambda: 'return x >= 350.0 && x < 370.0;'
+          then:
+            - homeassistant.service:
+                service: notify.mobile_app_gsm_koen
+                data:
+                  title: "⚠️ Chloor dagdosis bijna vol"
+                  message: !lambda |-
+                    char buf[200];
+                    snprintf(buf, sizeof(buf),
+                      "Vandaag al %.0f ml NaOCl gedoseerd (max %.0f ml/dag).\nORP: %.0f mV\nPool temp: %.1f °C",
+                      x,
+                      id(max_dag_volume).state,
+                      id(orp_ezo).state,
+                      id(rtd_ezo_pool).state
+                    );
+                    return std::string(buf);
 
   - platform: template
     id: totaal_persistent_sensor
