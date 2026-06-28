@@ -236,6 +236,21 @@ globals:
     restore_value: false
     initial_value: "0"
 
+  - id: lege_fles_orp_ref
+    type: float
+    restore_value: false
+    initial_value: "0.0"
+
+  - id: lege_fles_dosering_ref
+    type: float
+    restore_value: false
+    initial_value: "0.0"
+
+  - id: lege_fles_notified
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
   - id: prev_current_volume
     type: float
     restore_value: true
@@ -1023,6 +1038,46 @@ interval:
               ESP_LOGI("cooling_bypass", "Flow referentie gereset (route wijziging naar Pool)");
             }
           }
+
+  # Lege fles detectie: elke 30 min checken of dosering stijgt maar ORP daalt
+  - interval: 30min
+    then:
+      - lambda: |-
+          float orp_nu = id(orp_ezo).state;
+          float dosering_nu = id(dag_volume_gedoseerd);
+
+          if (id(lege_fles_orp_ref) > 0) {
+            float orp_delta = id(lege_fles_orp_ref) - orp_nu;       // positief = daling
+            float dose_delta = dosering_nu - id(lege_fles_dosering_ref); // positief = gedoseerd
+
+            if (dose_delta >= 60.0 && orp_delta >= 20.0) {
+              if (!id(lege_fles_notified)) {
+                id(lege_fles_notified) = true;
+                ESP_LOGW("chloor", "Lege fles detectie! +%.0f mL gedoseerd maar ORP -%.0f mV", dose_delta, orp_delta);
+              }
+            } else {
+              id(lege_fles_notified) = false;
+            }
+          }
+
+          id(lege_fles_orp_ref) = orp_nu;
+          id(lege_fles_dosering_ref) = dosering_nu;
+      - if:
+          condition:
+            lambda: 'return id(lege_fles_notified);'
+          then:
+            - homeassistant.service:
+                service: notify.mobile_app_gsm_koen
+                data:
+                  title: "⚠️ Chloor fles leeg?"
+                  message: !lambda |-
+                    char buf[200];
+                    snprintf(buf, sizeof(buf),
+                      "Pomp doseert maar ORP daalt! Mogelijk lege fles of aanzuigprobleem.\nORP: %.0f mV\nVandaag gedoseerd: %.0f mL",
+                      id(orp_ezo).state,
+                      id(dag_volume_gedoseerd)
+                    );
+                    return std::string(buf);
 
 # ─── Scripts ─────────────────────────────────────────────────────────────────
 
