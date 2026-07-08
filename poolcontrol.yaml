@@ -73,6 +73,9 @@ time:
           - globals.set:
               id: last_dose_day
               value: !lambda return id(my_time).now().day_of_year;
+          - globals.set:
+              id: dag_waarschuwing_verstuurd
+              value: "false"
           - logger.log: "Dagvolume teller gereset om middernacht"
     on_time_sync:
       then:
@@ -83,6 +86,7 @@ time:
               if (id(last_dose_day) != today) {
                 id(dag_volume_gedoseerd) = 0.0;
                 id(last_dose_day) = today;
+                id(dag_waarschuwing_verstuurd) = false;
                 ESP_LOGI("chlorine", "Nieuwe dag gedetecteerd na reboot → dagvolume gereset");
               } else {
                 ESP_LOGI("chlorine", "Zelfde dag na reboot → dagvolume hersteld: %.1f mL", id(dag_volume_gedoseerd));
@@ -220,6 +224,11 @@ globals:
     type: float
     restore_value: true
     initial_value: "0.0"
+
+  - id: dag_waarschuwing_verstuurd
+    type: bool
+    restore_value: true
+    initial_value: "false"
 
   - id: last_dose_day
     type: int
@@ -761,8 +770,11 @@ sensor:
     on_value:
       - if:
           condition:
-            lambda: 'return x >= 350.0 && x < 370.0;'
+            lambda: 'return x >= 350.0 && !id(dag_waarschuwing_verstuurd);'
           then:
+            - globals.set:
+                id: dag_waarschuwing_verstuurd
+                value: "true"
             - homeassistant.service:
                 service: notify.mobile_app_gsm_koen
                 data:
