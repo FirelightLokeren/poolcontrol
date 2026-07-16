@@ -76,6 +76,12 @@ time:
           - globals.set:
               id: dag_waarschuwing_verstuurd
               value: "false"
+          - globals.set:
+              id: dosis_zonder_effect_volume
+              value: "0.0"
+          - globals.set:
+              id: dosis_falen_gemeld
+              value: "false"
           - logger.log: "Dagvolume teller gereset om middernacht"
     on_time_sync:
       then:
@@ -256,6 +262,17 @@ globals:
     initial_value: "0.0"
 
   - id: lege_fles_notified
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  # Ineffectieve dosering: ORP komt niet boven drempel ondanks doses
+  - id: dosis_zonder_effect_volume
+    type: float
+    restore_value: false
+    initial_value: "0.0"
+
+  - id: dosis_falen_gemeld
     type: bool
     restore_value: false
     initial_value: "false"
@@ -456,6 +473,19 @@ number:
     step: 10
     unit_of_measurement: "mL"
     icon: mdi:calendar-alert
+    mode: box
+
+  - platform: template
+    id: dosis_zonder_effect_drempel
+    name: "Chloor Drempel Dosis Zonder Effect"
+    optimistic: true
+    restore_value: true
+    initial_value: 100
+    min_value: 20
+    max_value: 500
+    step: 10
+    unit_of_measurement: "mL"
+    icon: mdi:alert-decagram-outline
     mode: box
 
 # ─── Knoppen ─────────────────────────────────────────────────────────────────
@@ -1051,6 +1081,18 @@ interval:
             }
           }
 
+  # Ineffectieve dosering: teller resetten zodra ORP terug boven de drempel komt
+  - interval: 1min
+    then:
+      - lambda: |-
+          if (id(orp_ezo).state >= id(orp_drempel_laag).state) {
+            if (id(dosis_zonder_effect_volume) > 0) {
+              ESP_LOGI("chloor", "ORP hersteld boven drempel → dosis-zonder-effect teller gereset");
+            }
+            id(dosis_zonder_effect_volume) = 0.0;
+            id(dosis_falen_gemeld) = false;
+          }
+
   # Lege fles detectie: elke 30 min checken of dosering stijgt maar ORP daalt
   - interval: 30min
     then:
@@ -1149,6 +1191,36 @@ script:
                   - globals.set:
                       id: dag_volume_gedoseerd
                       value: !lambda return id(dag_volume_gedoseerd) + id(auto_dose_volume).state;
+                  - globals.set:
+                      id: dosis_zonder_effect_volume
+                      value: !lambda return id(dosis_zonder_effect_volume) + id(auto_dose_volume).state;
+                  - if:
+                      condition:
+                        lambda: |-
+                          return id(dosis_zonder_effect_volume) >= id(dosis_zonder_effect_drempel).state && !id(dosis_falen_gemeld);
+                      then:
+                        - globals.set:
+                            id: dosis_falen_gemeld
+                            value: "true"
+                        - logger.log:
+                            format: "ALARM: %.0f mL gedoseerd zonder dat ORP boven drempel (%.0f mV) kwam"
+                            args:
+                              - "id(dosis_zonder_effect_volume)"
+                              - "id(orp_drempel_laag).state"
+                        - homeassistant.service:
+                            service: notify.mobile_app_gsm_koen
+                            data:
+                              title: "⚠️ Chloor dosering zonder effect"
+                              message: !lambda |-
+                                char buf[220];
+                                snprintf(buf, sizeof(buf),
+                                  "Er is %.0f mL gedoseerd zonder dat ORP boven de drempel (%.0f mV) kwam. "
+                                  "Mogelijk verstopte injector, losse slang of lege fles.\nORP nu: %.0f mV",
+                                  id(dosis_zonder_effect_volume),
+                                  id(orp_drempel_laag).state,
+                                  id(orp_ezo).state
+                                );
+                                return std::string(buf);
                   - ezo_pmp.dose_volume:
                       id: chloor
                       volume: !lambda return id(auto_dose_volume).state;
