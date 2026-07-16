@@ -1212,15 +1212,18 @@ script:
                             data:
                               title: "⚠️ Chloor dosering zonder effect"
                               message: !lambda |-
-                                char buf[220];
+                                char buf[300];
                                 snprintf(buf, sizeof(buf),
                                   "Er is %.0f mL gedoseerd zonder dat ORP boven de drempel (%.0f mV) kwam. "
-                                  "Mogelijk verstopte injector, losse slang of lege fles.\nORP nu: %.0f mV",
+                                  "Mogelijk verstopte injector, losse slang of lege fles.\nORP nu: %.0f mV\n"
+                                  "Automatisch doseren is gepauzeerd tot je dit manueel herstelt.",
                                   id(dosis_zonder_effect_volume),
                                   id(orp_drempel_laag).state,
                                   id(orp_ezo).state
                                 );
                                 return std::string(buf);
+                        - switch.turn_off: auto_dosing_switch
+                        - logger.log: "Automatisch doseren gepauzeerd door ineffectieve-dosering alarm"
                   - ezo_pmp.dose_volume:
                       id: chloor
                       volume: !lambda return id(auto_dose_volume).state;
