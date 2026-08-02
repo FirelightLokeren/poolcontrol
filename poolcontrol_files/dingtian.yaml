@@ -302,6 +302,17 @@ interval:
             return;
           }
 
+          // --- FLOW-BEVEILIGING HEEFT VOORRANG ---
+          // Niet ingrijpen zolang de flow-logica de pomp bewust stuurt:
+          //   flow_emergency     → noodstop, enkel manueel te resetten
+          //   flow_retry_count   → pomp staat in een 30s uit/aan retry-cyclus
+          //   flow_retry_pending → wachten op stabilisatie na herstart
+          if (id(flow_emergency) ||
+              id(flow_retry_count) > 0 ||
+              id(flow_retry_pending)) {
+            return;
+          }
+
           auto delta    = id(delta_temp).state;
           auto env_temp = id(ble_pool_temp_template).state;
           auto speed    = id(pump_speed).current_option();
