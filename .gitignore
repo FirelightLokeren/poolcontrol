@@ -1,13 +1,14 @@
-**/.esphome/
-**/__pycache__/
-*.pyc
-secrets.yaml
-# Alles negeren behalve poolcontrol bestanden
+# Alles negeren, daarna selectief toelaten
 *
 !.gitignore
+!README.md
 !poolcontrol.yaml
+!pool-display.yaml
 !poolcontrol_files/
 !poolcontrol_files/**
-poolcontrol_files/.esphome/
+
+# Uitzonderingen binnen de whitelist (laatste match wint)
+poolcontrol_files/**/.esphome/
 poolcontrol_files/**/__pycache__/
 poolcontrol_files/**/*.pyc
+poolcontrol_files/**/secrets.yaml
