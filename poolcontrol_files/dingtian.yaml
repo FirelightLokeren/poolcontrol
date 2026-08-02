@@ -1,5 +1,5 @@
 external_components:
-  - source: github://kecajtop/dtr0xx_io@master
+  - source: github://lucize/dtr0xx_io@master
     refresh: 60s
     components:
       - dtr0xx_io
