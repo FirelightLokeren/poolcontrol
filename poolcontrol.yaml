@@ -7,6 +7,15 @@ substitutions:
   friendly_name: "poolcontrol"
   debounce_time: "100ms"
 
+  # --- Flow-drempels, allemaal in ECHTE L/min ---
+  # Waren voorheen L/15s (factor 4 te laag); na de correctie in flow_rate
+  # staan ze hier centraal zodat je ze op basis van je logs kan bijstellen.
+  flow_min_retry: "2.0"          # hieronder → retry-cyclus / noodstop
+  flow_min_dosing: "4.0"         # minimum om te mogen doseren
+  flow_min_warning: "8.0"        # logwaarschuwing (normaal bedrijf)
+  flow_min_warning_cool: "6.0"   # logwaarschuwing bij koel-bypass
+  flow_trend_delta: "1.2"        # daling t.o.v. referentie → trendalarm
+
 esp32:
   board: esp32dev
   framework:
@@ -293,6 +302,14 @@ binary_sensor:
   - platform: template
     id: startup_complete
     internal: true
+
+  - platform: template
+    id: flow_emergency_sensor
+    name: "Flow Noodstop Actief"
+    device_class: problem
+    icon: mdi:alert-octagon
+    lambda: |-
+      return id(flow_emergency);
 
   - platform: ezo_pmp
     pump_state:
@@ -621,6 +638,32 @@ button:
           else:
             - logger.log: "Filter: niet gestart, pomp_mode staat niet op auto"
 
+# Flow-noodstop handmatig opheffen
+  - platform: template
+    name: "Flow Noodstop Reset"
+    id: btn_flow_emergency_reset
+    icon: mdi:restart-alert
+    on_press:
+      - lambda: |-
+          if (!id(flow_emergency)) {
+            ESP_LOGI("flow_protect", "Reset gevraagd maar geen noodstop actief");
+            return;
+          }
+          ESP_LOGW("flow_protect", "Noodstop manueel gereset");
+          id(flow_emergency)        = false;
+          id(flow_retry_count)      = 0;
+          id(flow_retry_pending)    = false;
+          id(flow_reference)        = 0;
+          id(flow_low_since)        = 0;
+          id(flow_speed_changed_at) = millis() / 1000;
+      - if:
+          condition:
+            lambda: 'return id(pump_mode).current_option() == "auto";'
+          then:
+            - select.set:
+                id: pump_speed
+                option: "med"
+
 # ─── Sensoren ────────────────────────────────────────────────────────────────
 
 sensor:
@@ -692,29 +735,44 @@ sensor:
     web_server:
       sorting_weight: 75
     update_interval: 15s
+    on_value:
+      # Debiet wordt hier berekend i.p.v. in een eigen 15s-interval.
+      # Zo valt elke berekening samen met exact één EZO-sample; de vroegere
+      # opzet kon door timing-jitter een delta van 0 zien en vals alarm geven.
+      - lambda: |-
+          static float    last_value  = NAN;
+          static uint32_t last_update = 0;
+          uint32_t now = millis();
+
+          if (isnan(last_value) || last_update == 0) {
+            last_value  = x;
+            last_update = now;
+            return;
+          }
+
+          float    delta = x - last_value;
+          uint32_t dt    = now - last_update;
+          last_value  = x;
+          last_update = now;
+
+          if (dt < 5000) return;   // te kort interval → onbetrouwbaar
+          if (delta < 0)  return;   // totalizer gereset
+
+          // L per ms → L per minuut
+          id(flow_rate).publish_state(delta * 60000.0f / (float) dt);
 
   - platform: template
     name: "Pump Flow Rate"
     id: flow_rate
     unit_of_measurement: "L/min"
     accuracy_decimals: 2
-    update_interval: 15s
-    lambda: |-
-      static float last_value = 0;
-      static uint32_t last_update = 0;
-      float current = id(flow_ezo).state;
-      uint32_t now = millis();
-      if (last_update == 0) {
-        last_update = now;
-        last_value = current;
-        return NAN;
-      }
-      float delta = current - last_value;
-      float time_diff = (now - last_update) / 15000.0;
-      last_value = current;
-      last_update = now;
-      if (time_diff <= 0 || delta < 0) return NAN;
-      return delta / time_diff;
+    update_interval: never   # wordt gepubliceerd vanuit flow_ezo.on_value
+    filters:
+      # Vangt een enkele uitschieter op zonder de reactietijd veel te vertragen
+      - median:
+          window_size: 3
+          send_every: 1
+          send_first_at: 1
     web_server:
       sorting_weight: 74
 
@@ -895,12 +953,9 @@ interval:
           if (id(pump_mode).current_option() != "auto") return;
           std::string speed = id(pump_speed).current_option();
           if (speed == "off") return;
-          if (id(flow_emergency) && speed != "off") {
-            ESP_LOGI("flow_protect", "Pomp herstart gedetecteerd → emergency reset");
-            id(flow_emergency) = false;
-            id(flow_retry_count) = 0;
-            id(flow_retry_pending) = false;
-          }
+          // Noodstop blijft actief tot manuele reset via de knop
+          // "Flow Noodstop Reset". Voorheen werd hij hier opgeheven zodra
+          // iets anders de pomp weer aanzette, waardoor hij nooit standhield.
           if (id(flow_emergency)) return;
           float flow = id(flow_rate).state;
           if (isnan(flow)) return;
@@ -909,7 +964,7 @@ interval:
             if ((now - id(flow_retry_at)) < 60) return;
             id(flow_retry_pending) = false;
           }
-          if (flow >= 0.5) {
+          if (flow >= ${flow_min_retry}f) {
             if (id(flow_retry_count) > 0) {
               ESP_LOGI("flow_protect", "Flow hersteld (%.2f L/min) - retry teller gereset", flow);
               id(flow_retry_count) = 0;
@@ -974,7 +1029,7 @@ interval:
           uint32_t now = millis() / 1000;
 
           // Referentie instellen na 60sec stabilisatie na snelheidswijziging
-          if (id(flow_reference) == 0 && flow > 0.5) {
+          if (id(flow_reference) == 0 && flow > ${flow_min_retry}f) {
             uint32_t elapsed = now - id(flow_speed_changed_at);
             if (elapsed >= 60) {
               id(flow_reference) = flow;
@@ -985,7 +1040,7 @@ interval:
             return;
           }
 
-          if (id(flow_reference) > 0 && flow < (id(flow_reference) - 0.3)) {
+          if (id(flow_reference) > 0 && flow < (id(flow_reference) - ${flow_trend_delta}f)) {
             if (id(flow_low_since) == 0) {
               id(flow_low_since) = now;
               ESP_LOGW("flow_trend", "Flow daling gedetecteerd: %.2f vs ref %.2f L/min",
@@ -1012,7 +1067,7 @@ interval:
   - interval: 2s
     then:
       - lambda: |-
-          float flow_drempel = id(bypass_cooling_override) ? 1.5f : 2.0f;
+          float flow_drempel = id(bypass_cooling_override) ? ${flow_min_warning_cool}f : ${flow_min_warning}f;
           if (!isnan(id(flow_rate).state) && id(flow_rate).state < flow_drempel) {
             ESP_LOGW("flow_check", "💧 Flow rate is below %.1f L/min (%.2f)", flow_drempel, id(flow_rate).state);
           }
@@ -1174,7 +1229,7 @@ script:
                     bool orp_te_laag = id(orp_ezo).state < id(orp_drempel_laag).state;
                     bool wachttijd_ok = (nu - id(last_dose_time)) >= wacht_sec;
                     bool dag_ok = (id(dag_volume_gedoseerd) + id(auto_dose_volume).state) <= id(max_dag_volume).state;
-                    bool flow_ok = !isnan(id(flow_rate).state) && id(flow_rate).state >= 1.0;
+                    bool flow_ok = !isnan(id(flow_rate).state) && id(flow_rate).state >= ${flow_min_dosing};
                     return pomp_ok && orp_te_laag && wachttijd_ok && dag_ok && flow_ok;
                 then:
                   - logger.log:
@@ -1248,7 +1303,7 @@ script:
                       condition:
                         lambda: |-
                           return id(pomp_bereikbaar).state &&
-                                 (isnan(id(flow_rate).state) || id(flow_rate).state < 1.0);
+                                 (isnan(id(flow_rate).state) || id(flow_rate).state < ${flow_min_dosing});
                       then:
                         - logger.log: "Automatisch doseren overgeslagen: geen flow gedetecteerd"
 # Filter: backspoelen + naspoelen
