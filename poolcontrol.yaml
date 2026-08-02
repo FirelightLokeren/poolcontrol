@@ -51,7 +51,7 @@ api:
 
 ota:
   - platform: esphome
-    password: "2494bd7a1d2db33431a15e569937e31d"
+    password: !ota_password
 
 web_server:
   port: 80
